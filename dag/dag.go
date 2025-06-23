@@ -6,7 +6,7 @@ import (
 	"os"
 	"sync"
 	"time"
-	
+	"bytes"
 	"github.com/robfig/cron/v3"
 )
 
@@ -73,15 +73,22 @@ func Register(d *DAG) {
 	dagRegistry[d.Name] = d
 }
 
-func (d *DAG) Logf(format string, args ...interface{}) {
-	line := fmt.Sprintf("[%s] %s\n", time.Now().Format("2006-01-02 15:04:05"), fmt.Sprintf(format, args...))
-
+func (d *DAG) logLine(level, msg string) {
+	line := fmt.Sprintf("[%s] [%s] %s\n", time.Now().Format("2006-01-02 15:04:05"), level, msg)
 	d.logLock.Lock()
 	defer d.logLock.Unlock()
-	if d.logFile != nil {
-		d.logFile.WriteString(line)
-		d.logFile.Sync()
-	}
+	d.logFile.WriteString(line)
+	d.logFile.Sync()
+}
+
+func (d *DAG) Logf(format string, args ...interface{}) {
+	msg := fmt.Sprintf(format, args...)
+	d.logLine("INFO", msg)
+}
+
+func (d *DAG) LogErrorf(format string, args ...interface{}) {
+	msg := fmt.Sprintf(format, args...)
+	d.logLine("ERROR", msg)
 }
 
 func Get(name string) (*DAG, bool) {
@@ -134,6 +141,24 @@ func (d *DAG) Run() {
 	d.logFile = f
 	defer d.logFile.Close()
 
+	// Redirect stdout
+	r, w, _ := os.Pipe()
+	oldStdout := os.Stdout
+	os.Stdout = w
+	defer func() { os.Stdout = oldStdout }()
+
+	go func() {
+		buf := make([]byte, 1024)
+		for {
+			n, err := r.Read(buf)
+			if err != nil {
+				return
+			}
+			line := string(bytes.TrimRight(buf[:n], "\n"))
+			d.logLine("INFO",line)
+		}
+	}()
+
 	c := cron.New()
 	c.AddFunc(d.Schedule, func() {
 		ctx, cancel := context.WithCancel(context.Background())
@@ -147,7 +172,6 @@ func (d *DAG) Run() {
 	// Keep the process alive
 	select {}
 }
-
 
 func (d *DAG) RunWithContext(ctx context.Context) {
 	os.MkdirAll("logs", 0755)
@@ -193,7 +217,7 @@ func (d *DAG) runJobWithContext(j *Job, ctx *Context, jobWg *sync.WaitGroup, dag
 		for dep.getStatus() != "success" {
 			select {
 			case <-dagCtx.Done():
-				d.Logf("Job %s canceled", j.ID)
+				d.LogErrorf("Job %s canceled", j.ID)
 				return
 			default:
 			}
@@ -204,9 +228,17 @@ func (d *DAG) runJobWithContext(j *Job, ctx *Context, jobWg *sync.WaitGroup, dag
 	j.setStatus("running")
 	d.Logf("Starting job %s", j.ID)
 
+	defer func() {
+		if r := recover(); r != nil {
+			d.LogErrorf("Job %s panic: %v", j.ID, r)
+			j.setStatus("failed")
+		}
+	}()
+
 	if j.Action != nil {
 		j.Action(ctx)
 		j.setStatus("success")
+		d.Logf("Completed job %s", j.ID)
 	} else if j.BranchFunc != nil {
 		selected := j.BranchFunc(ctx)
 		j.setStatus("success")
@@ -218,9 +250,8 @@ func (d *DAG) runJobWithContext(j *Job, ctx *Context, jobWg *sync.WaitGroup, dag
 		}
 	} else {
 		j.setStatus("success")
+		d.Logf("Completed job %s", j.ID)
 	}
-
-	d.Logf("Completed job %s", j.ID)
 
 	// Trigger child jobs if all dependencies are met
 	for _, child := range d.Jobs {
@@ -241,7 +272,6 @@ func (d *DAG) runJobWithContext(j *Job, ctx *Context, jobWg *sync.WaitGroup, dag
 		}
 	}
 }
-
 
 func (j *Job) getStatus() string {
 	j.statusLock.Lock()

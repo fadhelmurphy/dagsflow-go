@@ -9,7 +9,7 @@ func init() {
 	d := dag.NewDAG("dag1", "*/1 * * * *")
 	a := d.NewJob("a", func(ctx *dag.Context) {
 		ctx.DAG.Logf("[DAG1] Run A PAKE LOGF")
-		ctx.DAG.Logf("[DAG1] Run A")
+		fmt.Println("[DAG1] Run A")
 		ctx.SetXCom("sebuah-key", "sebuah-nilai")
 
 	})
