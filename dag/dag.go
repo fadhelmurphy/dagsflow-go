@@ -1,13 +1,13 @@
 package dag
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"github.com/robfig/cron/v3"
 	"os"
 	"sync"
 	"time"
-	"bytes"
-	"github.com/robfig/cron/v3"
 )
 
 type Context struct {
@@ -51,15 +51,16 @@ func (j *Job) Branch(nexts ...*Job) {
 }
 
 type DAG struct {
-	Name     string
-	Schedule string
-	Jobs     []*Job
-	xcom     map[string]interface{}
-	xcomLock sync.Mutex
-	wg       sync.WaitGroup
-	jobMap   map[string]*Job
-	logFile  *os.File
-	logLock  sync.Mutex
+	Name       string
+	Schedule   string
+	Jobs       []*Job
+	xcom       map[string]interface{}
+	xcomLock   sync.Mutex
+	wg         sync.WaitGroup
+	jobMap     map[string]*Job
+	logFile    *os.File
+	logLock    sync.Mutex
+	activeJobs map[string]bool
 }
 
 var (
@@ -110,10 +111,11 @@ func ListDAGs() []*DAG {
 
 func NewDAG(name, schedule string) *DAG {
 	return &DAG{
-		Name:     name,
-		Schedule: schedule,
-		xcom:     make(map[string]interface{}),
-		jobMap:   make(map[string]*Job),
+		Name:       name,
+		Schedule:   schedule,
+		xcom:       make(map[string]interface{}),
+		jobMap:     make(map[string]*Job),
+		activeJobs: make(map[string]bool),
 	}
 }
 
@@ -155,7 +157,7 @@ func (d *DAG) Run() {
 				return
 			}
 			line := string(bytes.TrimRight(buf[:n], "\n"))
-			d.logLine("INFO",line)
+			d.logLine("INFO", line)
 		}
 	}()
 
@@ -193,6 +195,7 @@ func (d *DAG) RunWithContext(ctx context.Context) {
 }
 
 func (d *DAG) runDAGWithContext(ctx context.Context) {
+	d.activeJobs = make(map[string]bool)
 	d.Logf("Running DAG: %s", d.Name)
 	myCtx := &Context{DAG: d}
 	var jobWg sync.WaitGroup
@@ -212,6 +215,23 @@ func (d *DAG) runDAGWithContext(ctx context.Context) {
 
 func (d *DAG) runJobWithContext(j *Job, ctx *Context, jobWg *sync.WaitGroup, dagCtx context.Context) {
 	defer jobWg.Done()
+
+	if len(d.activeJobs) > 0 {
+		parentsSucceeded := true
+		for _, dep := range j.Depends {
+			if dep.getStatus() != "success" {
+				parentsSucceeded = false
+				break
+			}
+		}
+		if !parentsSucceeded {
+			return
+		}
+
+		if !d.activeJobs[j.ID] {
+			d.activeJobs[j.ID] = true
+		}
+	}
 
 	for _, dep := range j.Depends {
 		for dep.getStatus() != "success" {
@@ -241,19 +261,37 @@ func (d *DAG) runJobWithContext(j *Job, ctx *Context, jobWg *sync.WaitGroup, dag
 		d.Logf("Completed job %s", j.ID)
 	} else if j.BranchFunc != nil {
 		selected := j.BranchFunc(ctx)
+		d.Logf("Branch %s selected %v", j.ID, selected)
+
+		for _, selID := range selected {
+			d.markDownstreamActive(selID)
+		}
+
+		// Auto-skip child branch
+		for _, job := range d.Jobs {
+			if job == nil || job.BranchFunc != nil {
+				continue
+			}
+			if isBranchChild(job) && !contains(selected, job.ID) {
+				d.Logf("Skipping job %s (auto-success to unblock DAG)", job.ID)
+				job.setStatus("success")
+			}
+		}
+
 		j.setStatus("success")
+
 		for _, selID := range selected {
 			if child, ok := d.jobMap[selID]; ok {
 				jobWg.Add(1)
 				go d.runJobWithContext(child, ctx, jobWg, dagCtx)
 			}
 		}
+		return
 	} else {
 		j.setStatus("success")
 		d.Logf("Completed job %s", j.ID)
 	}
 
-	// Trigger child jobs if all dependencies are met
 	for _, child := range d.Jobs {
 		for _, dep := range child.Depends {
 			if dep == j {
@@ -270,6 +308,104 @@ func (d *DAG) runJobWithContext(j *Job, ctx *Context, jobWg *sync.WaitGroup, dag
 				}
 			}
 		}
+	}
+}
+
+func isBranchChild(j *Job) bool {
+	for _, dep := range j.Depends {
+		if dep.BranchFunc != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func contains(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
+}
+
+func (d *DAG) markDownstreamActive(jobID string) {
+	if d.activeJobs[jobID] {
+		return
+	}
+	d.activeJobs[jobID] = true
+
+	if job, ok := d.jobMap[jobID]; ok {
+		for _, child := range d.getChildren(job) {
+			d.markDownstreamActive(child.ID)
+		}
+	}
+}
+
+
+func (d *DAG) RerunDAG() {
+	d.Logf("Rerunning DAG: %s", d.Name)
+	for _, job := range d.Jobs {
+		job.setStatus("pending")
+	}
+	ctx := &Context{DAG: d}
+	var jobWg sync.WaitGroup
+	for _, job := range d.Jobs {
+		if len(job.Depends) == 0 {
+			jobWg.Add(1)
+			go d.runJobWithContext(job, ctx, &jobWg, context.Background())
+		}
+	}
+	jobWg.Wait()
+}
+
+func (d *DAG) RerunJob(jobID string, downstream bool, upstream bool) {
+	target, ok := d.jobMap[jobID]
+	if !ok {
+		d.LogErrorf("[ERROR] Job %s not found", jobID)
+		return
+	}
+	d.Logf("Rerunning job %s (downstream=%v, upstream=%v)", jobID, downstream, upstream)
+
+	// Reset status
+	visited := make(map[string]bool)
+	if upstream {
+		d.resetUpstream(target, visited)
+	}
+	if downstream {
+		d.resetDownstream(target, visited)
+	}
+	if !upstream && !downstream {
+		target.setStatus("pending")
+	}
+
+	// Run
+	ctx := &Context{DAG: d}
+	var jobWg sync.WaitGroup
+	jobWg.Add(1)
+	go d.runJobWithContext(target, ctx, &jobWg, context.Background())
+	jobWg.Wait()
+}
+
+func (d *DAG) resetUpstream(job *Job, visited map[string]bool) {
+	if visited[job.ID] {
+		return
+	}
+	visited[job.ID] = true
+	job.setStatus("pending")
+	for _, dep := range job.Depends {
+		d.resetUpstream(dep, visited)
+	}
+}
+
+func (d *DAG) resetDownstream(job *Job, visited map[string]bool) {
+	if visited[job.ID] {
+		return
+	}
+	visited[job.ID] = true
+	job.setStatus("pending")
+	for _, child := range d.getChildren(job) {
+		d.resetDownstream(child, visited)
 	}
 }
 
@@ -312,7 +448,6 @@ func (d *DAG) printJobTree(j *Job, prefix string, isLast bool, visited map[strin
 	}
 }
 
-
 func (d *DAG) getChildren(j *Job) []*Job {
 	var children []*Job
 	for _, job := range d.Jobs {
@@ -324,4 +459,3 @@ func (d *DAG) getChildren(j *Job) []*Job {
 	}
 	return children
 }
-

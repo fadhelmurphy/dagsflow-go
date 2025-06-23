@@ -195,7 +195,7 @@ var logCmd = &cobra.Command{
 		}
 		defer f.Close()
 
-		// Baca historis
+		// Read History
 		scanner := bufio.NewScanner(f)
 		for scanner.Scan() {
 			fmt.Println(scanner.Text())
@@ -214,6 +214,44 @@ var logCmd = &cobra.Command{
 	},
 }
 
+var rerunDagCmd = &cobra.Command{
+	Use: "rerun-dag [dag_name]",
+	Short: "Rerun entire DAG",
+	Run: func(cmd *cobra.Command, args []string) {
+		if len(args) < 1 {
+			fmt.Println("Please provide DAG name")
+			return
+		}
+		d, ok := dag.Get(args[0])
+		if !ok {
+			d.LogErrorf("DAG not found")
+			return
+		}
+		d.RerunDAG()
+	},
+}
+
+var rerunJobCmd = &cobra.Command{
+	Use: "rerun-job [dag_name] [job_id]",
+	Short: "Rerun job in DAG",
+	Run: func(cmd *cobra.Command, args []string) {
+		if len(args) < 2 {
+			fmt.Println("Please provide DAG name and job ID")
+			return
+		}
+		d, ok := dag.Get(args[0])
+		if !ok {
+			fmt.Println("DAG not found")
+			return
+		}
+		jobID := args[1]
+		downstream, _ := cmd.Flags().GetBool("downstream")
+		upstream, _ := cmd.Flags().GetBool("upstream")
+		d.RerunJob(jobID, downstream, upstream)
+	},
+}
+
+
 func Execute() {
 	rootCmd.AddCommand(runCmd)
 	rootCmd.AddCommand(runAllCmd)
@@ -223,6 +261,11 @@ func Execute() {
 	rootCmd.AddCommand(graphCmd)
 	rootCmd.AddCommand(internalRunCmd)
 	rootCmd.AddCommand(logCmd)
+	rerunJobCmd.Flags().Bool("downstream", false, "Rerun downstream jobs")
+	rerunJobCmd.Flags().Bool("upstream", false, "Rerun upstream jobs")
+
+	rootCmd.AddCommand(rerunDagCmd)
+	rootCmd.AddCommand(rerunJobCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)

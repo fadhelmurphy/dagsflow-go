@@ -1,6 +1,7 @@
 package dags
 
 import (
+	"fmt"
 	"dagsflow-go/dag"
 )
 
@@ -8,7 +9,18 @@ func init() {
 	d := dag.NewDAG("custom_dag", "*/1 * * * *")
 
 	start := d.NewJob("start", func(ctx *dag.Context) {
-		ctx.DAG.Logf("Start job")
+		fmt.Println("[custom_dag] Start job running")
+		ctx.SetXCom("val", 99)
+	})
+
+	branch := d.NewBranchJob("branch", func(ctx *dag.Context) []string {
+		val := ctx.GetXCom("val").(int)
+		if val > 50 {
+			fmt.Println("[custom_dag] Pilih print_A")
+			return []string{"print_A"}
+		}
+		fmt.Println("[custom_dag] Pilih print_B")
+		return []string{"print_B"}
 	})
 
 	printA := d.NewJob("print_A", func(ctx *dag.Context) {
@@ -28,7 +40,8 @@ func init() {
 	})
 
 	// setup dependency
-	start.Branch(printA, printB)
+	start.Then(branch)
+	branch.Branch(printA, printB)
 	printA.Then(printC)
 	printC.Then(finish)
 	printB.Then(finish)
