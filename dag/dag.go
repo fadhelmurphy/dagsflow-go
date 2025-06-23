@@ -286,22 +286,42 @@ func (j *Job) setStatus(s string) {
 }
 
 func (d *DAG) PrintGraph() {
-	childrenMap := make(map[string][]string)
-	for _, j := range d.Jobs {
-		for _, dep := range j.Depends {
-			childrenMap[dep.ID] = append(childrenMap[dep.ID], j.ID)
-		}
-		if _, exists := childrenMap[j.ID]; !exists {
-			childrenMap[j.ID] = []string{}
-		}
-	}
-
 	fmt.Printf("DAG: %s\n", d.Name)
-	for parent, children := range childrenMap {
-		if len(children) == 0 {
-			fmt.Printf("  %s --> (no children)\n", parent)
-		} else {
-			fmt.Printf("  %s --> %v\n", parent, children)
+	visited := make(map[string]bool)
+	for _, job := range d.Jobs {
+		if len(job.Depends) == 0 {
+			d.printJobTree(job, "", true, visited)
 		}
 	}
 }
+
+func (d *DAG) printJobTree(j *Job, prefix string, isLast bool, visited map[string]bool) {
+	connector := "├──"
+	newPrefix := prefix + "│   "
+	if isLast {
+		connector = "└──"
+		newPrefix = prefix + "    "
+	}
+
+	fmt.Printf("%s%s %s\n", prefix, connector, j.ID)
+
+	children := d.getChildren(j)
+	for i, child := range children {
+		last := i == len(children)-1
+		d.printJobTree(child, newPrefix, last, visited)
+	}
+}
+
+
+func (d *DAG) getChildren(j *Job) []*Job {
+	var children []*Job
+	for _, job := range d.Jobs {
+		for _, dep := range job.Depends {
+			if dep == j {
+				children = append(children, job)
+			}
+		}
+	}
+	return children
+}
+

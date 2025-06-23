@@ -1,0 +1,102 @@
+[2025-06-23 17:35:00] [INFO] Cron triggered for DAG custom_dag
+[2025-06-23 17:35:00] [INFO] Running DAG: custom_dag
+[2025-06-23 17:35:00] [INFO] Starting job start
+[2025-06-23 17:35:00] [INFO] Start job
+[2025-06-23 17:35:00] [INFO] Completed job start
+[2025-06-23 17:35:00] [INFO] Starting job print_B
+[2025-06-23 17:35:00] [INFO] Print B
+[2025-06-23 17:35:00] [INFO] Starting job print_A
+[2025-06-23 17:35:00] [INFO] Print A
+[2025-06-23 17:35:00] [INFO] Completed job print_B
+[2025-06-23 17:35:00] [INFO] Completed job print_A
+[2025-06-23 17:35:00] [INFO] Starting job print_C
+[2025-06-23 17:35:00] [INFO] Print C
+[2025-06-23 17:35:00] [INFO] Completed job print_C
+[2025-06-23 17:35:00] [INFO] Starting job finish
+[2025-06-23 17:35:00] [INFO] Finish job
+[2025-06-23 17:35:00] [INFO] Completed job finish
+[2025-06-23 17:36:00] [INFO] Cron triggered for DAG custom_dag
+[2025-06-23 17:36:00] [INFO] Running DAG: custom_dag
+[2025-06-23 17:36:00] [INFO] Starting job start
+[2025-06-23 17:36:00] [INFO] Start job
+[2025-06-23 17:36:00] [INFO] Completed job start
+[2025-06-23 17:36:00] [INFO] Starting job print_B
+[2025-06-23 17:36:00] [INFO] Print B
+[2025-06-23 17:36:00] [INFO] Completed job print_B
+[2025-06-23 17:36:00] [INFO] Starting job print_A
+[2025-06-23 17:36:00] [INFO] Print A
+[2025-06-23 17:36:00] [INFO] Completed job print_A
+[2025-06-23 17:36:00] [INFO] Starting job print_C
+[2025-06-23 17:36:00] [INFO] Print C
+[2025-06-23 17:36:00] [INFO] Completed job print_C
+[2025-06-23 17:36:00] [INFO] Starting job finish
+[2025-06-23 17:36:00] [INFO] Finish job
+[2025-06-23 17:36:00] [INFO] Completed job finish
+[2025-06-23 17:37:00] [INFO] Cron triggered for DAG custom_dag
+[2025-06-23 17:37:00] [INFO] Running DAG: custom_dag
+[2025-06-23 17:37:00] [INFO] Starting job start
+[2025-06-23 17:37:00] [INFO] Start job
+[2025-06-23 17:37:00] [INFO] Completed job start
+[2025-06-23 17:37:00] [INFO] Starting job print_B
+[2025-06-23 17:37:00] [INFO] Print B
+[2025-06-23 17:37:00] [INFO] Completed job print_B
+[2025-06-23 17:37:00] [INFO] Starting job print_A
+[2025-06-23 17:37:00] [INFO] Print A
+[2025-06-23 17:37:00] [INFO] Completed job print_A
+[2025-06-23 17:37:00] [INFO] Starting job print_C
+[2025-06-23 17:37:00] [INFO] Print C
+[2025-06-23 17:37:00] [INFO] Completed job print_C
+[2025-06-23 17:37:00] [INFO] Starting job finish
+[2025-06-23 17:37:00] [INFO] Finish job
+[2025-06-23 17:37:00] [INFO] Completed job finish
+[2025-06-23 17:38:00] [INFO] Cron triggered for DAG custom_dag
+[2025-06-23 17:38:00] [INFO] Running DAG: custom_dag
+[2025-06-23 17:38:00] [INFO] Starting job start
+[2025-06-23 17:38:00] [INFO] Start job
+[2025-06-23 17:38:00] [INFO] Completed job start
+[2025-06-23 17:38:00] [INFO] Starting job print_B
+[2025-06-23 17:38:00] [INFO] Print B
+[2025-06-23 17:38:00] [INFO] Completed job print_B
+[2025-06-23 17:38:00] [INFO] Starting job print_A
+[2025-06-23 17:38:00] [INFO] Print A
+[2025-06-23 17:38:00] [INFO] Completed job print_A
+[2025-06-23 17:38:00] [INFO] Starting job print_C
+[2025-06-23 17:38:00] [INFO] Print C
+[2025-06-23 17:38:00] [INFO] Completed job print_C
+[2025-06-23 17:38:00] [INFO] Starting job finish
+[2025-06-23 17:38:00] [INFO] Finish job
+[2025-06-23 17:38:00] [INFO] Completed job finish
+[2025-06-23 17:39:00] [INFO] Cron triggered for DAG custom_dag
+[2025-06-23 17:39:00] [INFO] Running DAG: custom_dag
+[2025-06-23 17:39:00] [INFO] Starting job start
+[2025-06-23 17:39:00] [INFO] Start job
+[2025-06-23 17:39:00] [INFO] Completed job start
+[2025-06-23 17:39:00] [INFO] Starting job print_B
+[2025-06-23 17:39:00] [INFO] Print B
+[2025-06-23 17:39:00] [INFO] Starting job print_A
+[2025-06-23 17:39:00] [INFO] Print A
+[2025-06-23 17:39:00] [INFO] Completed job print_B
+[2025-06-23 17:39:00] [INFO] Completed job print_A
+[2025-06-23 17:39:00] [INFO] Starting job print_C
+[2025-06-23 17:39:00] [INFO] Print C
+[2025-06-23 17:39:00] [INFO] Completed job print_C
+[2025-06-23 17:39:00] [INFO] Starting job finish
+[2025-06-23 17:39:00] [INFO] Finish job
+[2025-06-23 17:39:00] [INFO] Completed job finish
+[2025-06-23 17:40:00] [INFO] Cron triggered for DAG custom_dag
+[2025-06-23 17:40:00] [INFO] Running DAG: custom_dag
+[2025-06-23 17:40:00] [INFO] Starting job start
+[2025-06-23 17:40:00] [INFO] Start job
+[2025-06-23 17:40:00] [INFO] Completed job start
+[2025-06-23 17:40:00] [INFO] Starting job print_B
+[2025-06-23 17:40:00] [INFO] Print B
+[2025-06-23 17:40:00] [INFO] Completed job print_B
+[2025-06-23 17:40:00] [INFO] Starting job print_A
+[2025-06-23 17:40:00] [INFO] Print A
+[2025-06-23 17:40:00] [INFO] Completed job print_A
+[2025-06-23 17:40:00] [INFO] Starting job print_C
+[2025-06-23 17:40:00] [INFO] Print C
+[2025-06-23 17:40:00] [INFO] Completed job print_C
+[2025-06-23 17:40:00] [INFO] Starting job finish
+[2025-06-23 17:40:00] [INFO] Finish job
+[2025-06-23 17:40:00] [INFO] Completed job finish
