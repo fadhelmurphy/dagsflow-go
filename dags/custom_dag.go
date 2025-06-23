@@ -6,7 +6,12 @@ import (
 )
 
 func init() {
-	d := dag.NewDAG("custom_dag", "*/1 * * * *")
+
+	config := map[string]any{
+		"threshold": 50,
+		"message":   "Hello from config",
+	}
+	d := dag.NewDAG("custom_dag", "*/1 * * * *", config)
 
 	start := d.NewJob("start", func(ctx *dag.Context) {
 		fmt.Println("[custom_dag] Start job running")
@@ -39,12 +44,33 @@ func init() {
 		ctx.DAG.Logf("Finish job")
 	})
 
+	triggerJob := d.NewJob("trigger_dag_branch", func(ctx *dag.Context) {
+	config := map[string]interface{}{
+		"param1": "value1",
+		"param2": 42,
+	}
+
+	// ctx.DAG.TriggerDAG("dag_branch") // tanpa config
+	ctx.DAG.TriggerDAGWithConfig("dag_branch",config, false) // dengan config 
+	}) // Non Blocking example (tidak perlu nunggu dag nya kelar)
+
+	triggerBlockingJob := d.NewJob("trigger_dag1", func(ctx *dag.Context) {
+			config := map[string]any{
+		"param1": "value1",
+		"param2": 42,
+	}
+	// ctx.DAG.TriggerDAGBlocking("dag1") // tanpa config
+	ctx.DAG.TriggerDAGWithConfig("dag1", config, true) // dengan config 
+	}) // Blocking example (perlu nunggu dag nya kelar)
+
+
 	// setup dependency
 	start.Then(branch)
 	branch.Branch(printA, printB)
 	printA.Then(printC)
 	printC.Then(finish)
 	printB.Then(finish)
+	finish.Then(triggerBlockingJob).Then(triggerJob)
 
 	dag.Register(d)
 }

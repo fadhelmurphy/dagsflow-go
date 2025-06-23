@@ -53,6 +53,7 @@ func (j *Job) Branch(nexts ...*Job) {
 type DAG struct {
 	Name       string
 	Schedule   string
+	Config     map[string]interface{}
 	Jobs       []*Job
 	xcom       map[string]interface{}
 	xcomLock   sync.Mutex
@@ -109,13 +110,37 @@ func ListDAGs() []*DAG {
 	return list
 }
 
-func NewDAG(name, schedule string) *DAG {
+func NewDAG(name, schedule string, config ...map[string]any) *DAG {
+	var cfg map[string]any
+	if len(config) > 0 && config[0] != nil {
+		cfg = config[0]
+	} else {
+		cfg = make(map[string]any)
+	}
 	return &DAG{
 		Name:       name,
 		Schedule:   schedule,
+		Config:     cfg,
 		xcom:       make(map[string]interface{}),
 		jobMap:     make(map[string]*Job),
 		activeJobs: make(map[string]bool),
+	}
+}
+
+func (d *DAG) TriggerDAGWithConfig(dagName string, config map[string]any, blocking bool) {
+	if target, ok := Get(dagName); ok {
+		d.Logf("Triggering DAG %s from DAG %s with config %v", dagName, d.Name, config)
+
+		target.Config = config
+
+		ctx := context.Background()
+		if blocking {
+			target.RunWithContext(ctx)
+		} else {
+			go target.RunWithContext(ctx)
+		}
+	} else {
+		d.LogErrorf("DAG %s not found to trigger", dagName)
 	}
 }
 
@@ -132,6 +157,27 @@ func (d *DAG) NewBranchJob(id string, branchFunc func(ctx *Context) []string) *J
 	d.jobMap[id] = job
 	return job
 }
+
+func (d *DAG) TriggerDAG(dagName string) {
+	if target, ok := Get(dagName); ok {
+		d.Logf("Triggering DAG %s from DAG %s", dagName, d.Name)
+		ctx := context.Background()
+		go target.RunWithContext(ctx)
+	} else {
+		d.LogErrorf("DAG %s not found to trigger", dagName)
+	}
+}
+
+func (d *DAG) TriggerDAGBlocking(dagName string) {
+	if target, ok := Get(dagName); ok {
+		d.Logf("Triggering DAG %s (blocking) from DAG %s", dagName, d.Name)
+		ctx := context.Background()
+		target.RunWithContext(ctx)
+	} else {
+		d.LogErrorf("DAG %s not found to trigger", dagName)
+	}
+}
+
 func (d *DAG) Run() {
 	os.MkdirAll("logs", 0755)
 	logPath := fmt.Sprintf("logs/%s.log", d.Name)
