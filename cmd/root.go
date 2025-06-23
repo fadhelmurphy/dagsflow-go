@@ -1,31 +1,26 @@
 package cmd
 
 import (
+	"bufio"
 	"fmt"
 	"os"
-	"strings"
-	"os/exec"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
+	"time"
 
 	"dagsflow-go/dag"
 
 	"github.com/spf13/cobra"
 )
 
-func spawnDetached(dagName string) error {
-	cmd := exec.Command(os.Args[0], "internal-run", dagName)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Start(); err != nil {
-		return err
-	}
+func writePidFiles(dagName string, pid int) error {
 	os.MkdirAll("dagsflow-pid", 0755)
 	pidFile := fmt.Sprintf("dagsflow-pid/%s.pid", dagName)
 	runningFile := fmt.Sprintf("dagsflow-pid/%s.running", dagName)
 
-	if err := os.WriteFile(pidFile, []byte(strconv.Itoa(cmd.Process.Pid)), 0644); err != nil {
+	if err := os.WriteFile(pidFile, []byte(strconv.Itoa(pid)), 0644); err != nil {
 		return err
 	}
 	if err := os.WriteFile(runningFile, []byte("running"), 0644); err != nil {
@@ -33,6 +28,7 @@ func spawnDetached(dagName string) error {
 	}
 	return nil
 }
+
 
 func stopByPidFile(dagName string) error {
 	pidFile := fmt.Sprintf("dagsflow-pid/%s.pid", dagName)
@@ -43,13 +39,19 @@ func stopByPidFile(dagName string) error {
 	pid, _ := strconv.Atoi(strings.TrimSpace(string(data)))
 	proc, err := os.FindProcess(pid)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to find process: %v", err)
 	}
-	_ = proc.Kill()
+
+	// Langsung kill (Windows style)
+	if err := proc.Kill(); err != nil {
+		return fmt.Errorf("failed to kill process: %v", err)
+	}
+
 	os.Remove(pidFile)
 	os.Remove(fmt.Sprintf("dagsflow-pid/%s.running", dagName))
 	return nil
 }
+
 
 var rootCmd = &cobra.Command{
 	Use:   "dagsflow-go",
@@ -178,6 +180,39 @@ var graphCmd = &cobra.Command{
 		d.PrintGraph()
 	},
 }
+var logCmd = &cobra.Command{
+	Use:   "log [dag-name]",
+	Short: "Show realtime log output of a DAG",
+	Args:  cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		dagName := args[0]
+		logFile := fmt.Sprintf("logs/%s.log", dagName)
+
+		f, err := os.Open(logFile)
+		if err != nil {
+			fmt.Printf("Failed to open log file: %v\n", err)
+			return
+		}
+		defer f.Close()
+
+		// Baca historis
+		scanner := bufio.NewScanner(f)
+		for scanner.Scan() {
+			fmt.Println(scanner.Text())
+		}
+
+		// Tail realtime
+		reader := bufio.NewReader(f)
+		for {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				time.Sleep(500 * time.Millisecond)
+				continue
+			}
+			fmt.Print(line)
+		}
+	},
+}
 
 func Execute() {
 	rootCmd.AddCommand(runCmd)
@@ -187,6 +222,7 @@ func Execute() {
 	rootCmd.AddCommand(listCmd)
 	rootCmd.AddCommand(graphCmd)
 	rootCmd.AddCommand(internalRunCmd)
+	rootCmd.AddCommand(logCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)

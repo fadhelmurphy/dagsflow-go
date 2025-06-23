@@ -3,26 +3,27 @@ package dag
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"time"
-
+	
 	"github.com/robfig/cron/v3"
 )
 
 type Context struct {
-	dag *DAG
+	DAG *DAG
 }
 
 func (c *Context) SetXCom(key string, val interface{}) {
-	c.dag.xcomLock.Lock()
-	defer c.dag.xcomLock.Unlock()
-	c.dag.xcom[key] = val
+	c.DAG.xcomLock.Lock()
+	defer c.DAG.xcomLock.Unlock()
+	c.DAG.xcom[key] = val
 }
 
 func (c *Context) GetXCom(key string) interface{} {
-	c.dag.xcomLock.Lock()
-	defer c.dag.xcomLock.Unlock()
-	return c.dag.xcom[key]
+	c.DAG.xcomLock.Lock()
+	defer c.DAG.xcomLock.Unlock()
+	return c.DAG.xcom[key]
 }
 
 type Job struct {
@@ -57,10 +58,12 @@ type DAG struct {
 	xcomLock sync.Mutex
 	wg       sync.WaitGroup
 	jobMap   map[string]*Job
+	logFile  *os.File
+	logLock  sync.Mutex
 }
 
 var (
-	dagRegistry = make(map[string]*DAG)
+	dagRegistry  = make(map[string]*DAG)
 	registryLock sync.RWMutex
 )
 
@@ -68,6 +71,17 @@ func Register(d *DAG) {
 	registryLock.Lock()
 	defer registryLock.Unlock()
 	dagRegistry[d.Name] = d
+}
+
+func (d *DAG) Logf(format string, args ...interface{}) {
+	line := fmt.Sprintf("[%s] %s\n", time.Now().Format("2006-01-02 15:04:05"), fmt.Sprintf(format, args...))
+
+	d.logLock.Lock()
+	defer d.logLock.Unlock()
+	if d.logFile != nil {
+		d.logFile.WriteString(line)
+		d.logFile.Sync()
+	}
 }
 
 func Get(name string) (*DAG, bool) {
@@ -109,21 +123,43 @@ func (d *DAG) NewBranchJob(id string, branchFunc func(ctx *Context) []string) *J
 	d.jobMap[id] = job
 	return job
 }
-
 func (d *DAG) Run() {
+	os.MkdirAll("logs", 0755)
+	logPath := fmt.Sprintf("logs/%s.log", d.Name)
+	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		fmt.Printf("Failed to open log file: %v\n", err)
+		return
+	}
+	d.logFile = f
+	defer d.logFile.Close()
+
 	c := cron.New()
 	c.AddFunc(d.Schedule, func() {
-		d.wg.Add(1)
-		go func() {
-			defer d.wg.Done()
-			d.runDAGWithContext(context.Background())
-		}()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		d.Logf("Cron triggered for DAG %s", d.Name)
+		go d.runDAGWithContext(ctx)
 	})
 	c.Start()
-	select {} // keep process alive
+
+	// Keep the process alive
+	select {}
 }
 
+
 func (d *DAG) RunWithContext(ctx context.Context) {
+	os.MkdirAll("logs", 0755)
+	logPath := fmt.Sprintf("logs/%s.log", d.Name)
+	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		fmt.Printf("Failed to open log file: %v\n", err)
+		return
+	}
+	d.logFile = f
+	defer d.logFile.Close()
+
 	d.wg.Add(1)
 	go func() {
 		defer d.wg.Done()
@@ -133,8 +169,8 @@ func (d *DAG) RunWithContext(ctx context.Context) {
 }
 
 func (d *DAG) runDAGWithContext(ctx context.Context) {
-	fmt.Printf("Running DAG: %s\n", d.Name)
-	myCtx := &Context{dag: d}
+	d.Logf("Running DAG: %s", d.Name)
+	myCtx := &Context{DAG: d}
 	var jobWg sync.WaitGroup
 
 	for _, job := range d.Jobs {
@@ -157,7 +193,7 @@ func (d *DAG) runJobWithContext(j *Job, ctx *Context, jobWg *sync.WaitGroup, dag
 		for dep.getStatus() != "success" {
 			select {
 			case <-dagCtx.Done():
-				fmt.Printf("Job %s canceled\n", j.ID)
+				d.Logf("Job %s canceled", j.ID)
 				return
 			default:
 			}
@@ -166,7 +202,7 @@ func (d *DAG) runJobWithContext(j *Job, ctx *Context, jobWg *sync.WaitGroup, dag
 	}
 
 	j.setStatus("running")
-	fmt.Printf("Starting job %s\n", j.ID)
+	d.Logf("Starting job %s", j.ID)
 
 	if j.Action != nil {
 		j.Action(ctx)
@@ -184,27 +220,28 @@ func (d *DAG) runJobWithContext(j *Job, ctx *Context, jobWg *sync.WaitGroup, dag
 		j.setStatus("success")
 	}
 
-	fmt.Printf("Completed job %s\n", j.ID)
+	d.Logf("Completed job %s", j.ID)
 
+	// Trigger child jobs if all dependencies are met
 	for _, child := range d.Jobs {
-	for _, dep := range child.Depends {
-		if dep == j {
-			allDepOk := true
-			for _, dep := range child.Depends {
-				if dep.getStatus() != "success" {
-					allDepOk = false
-					break
+		for _, dep := range child.Depends {
+			if dep == j {
+				allDepOk := true
+				for _, dep := range child.Depends {
+					if dep.getStatus() != "success" {
+						allDepOk = false
+						break
+					}
 				}
-			}
-			if allDepOk {
-				jobWg.Add(1)
-				go d.runJobWithContext(child, ctx, jobWg, dagCtx)
+				if allDepOk {
+					jobWg.Add(1)
+					go d.runJobWithContext(child, ctx, jobWg, dagCtx)
+				}
 			}
 		}
 	}
 }
 
-}
 
 func (j *Job) getStatus() string {
 	j.statusLock.Lock()
