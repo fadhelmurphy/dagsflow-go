@@ -1,0 +1,1 @@
+echo "Running script for user: {{ .username }}"

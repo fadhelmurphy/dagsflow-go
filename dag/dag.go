@@ -8,19 +8,21 @@ import (
 	"os"
 	"sync"
 	"time"
+	"text/template"
+    "os/exec"
 )
 
 type Context struct {
 	DAG *DAG
 }
 
-func (c *Context) SetXCom(key string, val interface{}) {
+func (c *Context) SetXCom(key string, val any) {
 	c.DAG.xcomLock.Lock()
 	defer c.DAG.xcomLock.Unlock()
 	c.DAG.xcom[key] = val
 }
 
-func (c *Context) GetXCom(key string) interface{} {
+func (c *Context) GetXCom(key string) any {
 	c.DAG.xcomLock.Lock()
 	defer c.DAG.xcomLock.Unlock()
 	return c.DAG.xcom[key]
@@ -83,12 +85,12 @@ func (d *DAG) logLine(level, msg string) {
 	d.logFile.Sync()
 }
 
-func (d *DAG) Logf(format string, args ...interface{}) {
+func (d *DAG) Logf(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	d.logLine("INFO", msg)
 }
 
-func (d *DAG) LogErrorf(format string, args ...interface{}) {
+func (d *DAG) LogErrorf(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	d.logLine("ERROR", msg)
 }
@@ -121,7 +123,7 @@ func NewDAG(name, schedule string, config ...map[string]any) *DAG {
 		Name:       name,
 		Schedule:   schedule,
 		Config:     cfg,
-		xcom:       make(map[string]interface{}),
+		xcom:       make(map[string]any),
 		jobMap:     make(map[string]*Job),
 		activeJobs: make(map[string]bool),
 	}
@@ -505,3 +507,96 @@ func (d *DAG) getChildren(j *Job) []*Job {
 	}
 	return children
 }
+func RenderTemplateFile(filePath string, ctx *Context, config map[string]any) (string, error) {
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read template file: %w", err)
+	}
+
+	data := map[string]any{}
+	ctx.DAG.xcomLock.Lock()
+	for k, v := range ctx.DAG.xcom {
+		data[k] = v
+	}
+	ctx.DAG.xcomLock.Unlock()
+
+	for k, v := range config {
+		data[k] = v
+	}
+
+	tmpl, err := template.New("tmpl").Parse(string(content))
+	if err != nil {
+		return "", fmt.Errorf("failed to parse template: %w", err)
+	}
+
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, data); err != nil {
+		return "", fmt.Errorf("failed to execute template: %w", err)
+	}
+
+	return buf.String(), nil
+}
+
+func (d *DAG) NewSQLJob(id string, filePath string, config ...map[string]any) *Job {
+	var cfg map[string]any
+	if len(config) > 0 {
+		cfg = config[0]
+	} else {
+		cfg = nil
+	}
+
+	job := &Job{
+		ID: id,
+		action: func(ctx *Context) {
+			rendered, err := RenderTemplateFile(filePath, ctx, cfg)
+			if err != nil {
+				ctx.DAG.LogErrorf("Render error in job %s: %v", id, err)
+				return
+			}
+			fmt.Println("Rendered SQL:\n", rendered)
+			// Di sini kamu bisa tambahkan eksekusi SQL jika mau
+		},
+		status: "pending",
+	}
+	d.Jobs = append(d.Jobs, job)
+	d.jobMap[id] = job
+	return job
+}
+
+func (d *DAG) NewShellJob(id string, filePath string, config ...map[string]any) *Job {
+	var cfg map[string]any
+	if len(config) > 0 {
+		cfg = config[0]
+	} else {
+		cfg = nil
+	}
+
+	job := &Job{
+		ID: id,
+		action: func(ctx *Context) {
+			rendered, err := RenderTemplateFile(filePath, ctx, cfg)
+			if err != nil {
+				ctx.DAG.LogErrorf("Render error in job %s: %v", id, err)
+				return
+			}
+			runShell(rendered, d)
+			// Bisa tambahkan eksekusi shell script jika mau
+		},
+		status: "pending",
+	}
+	d.Jobs = append(d.Jobs, job)
+	d.jobMap[id] = job
+	return job
+}
+
+
+func runShell(script string, d *DAG) {
+    cmd := exec.Command("bash", "-c", script)
+    out, err := cmd.CombinedOutput()
+    if err != nil {
+        d.LogErrorf("Shell script error: %v", err)
+    }
+    d.Logf("Shell output:\n%s", string(out))
+}
+
+

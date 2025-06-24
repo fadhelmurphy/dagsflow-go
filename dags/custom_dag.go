@@ -11,7 +11,7 @@ func init() {
 		"threshold": 99,
 		"message":   "Hello from config",
 	}
-	d := dag.NewDAG("custom_dag", "*/1 * * * *", config)
+	d := dag.NewDAG("custom_dag", "@every 1s", config)
 
 	start := d.NewJob("start", func(ctx *dag.Context) {
 		val := ctx.DAG.Config["threshold"]
