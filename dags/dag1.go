@@ -3,6 +3,7 @@ package dags
 import (
 	"fmt"
 	"dagsflow-go/dag"
+	"strconv"
 )
 
 func init() {
@@ -14,6 +15,9 @@ func init() {
 
 	})
 	b := d.NewJob("b", func(ctx *dag.Context) {
+		
+		getParam2 := ctx.DAG.Config["param2"].(int)
+		ctx.DAG.Logf("%s << getParam2", strconv.Itoa(getParam2))
 		getKey := ctx.GetXCom("sebuah-key")
 		logGetKey := fmt.Sprintf("%s << ini nilai dari key", getKey)
 		ctx.DAG.Logf(logGetKey)
