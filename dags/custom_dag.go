@@ -8,18 +8,22 @@ import (
 func init() {
 
 	config := map[string]any{
-		"threshold": 50,
+		"threshold": 99,
 		"message":   "Hello from config",
 	}
 	d := dag.NewDAG("custom_dag", "*/1 * * * *", config)
 
 	start := d.NewJob("start", func(ctx *dag.Context) {
+		val := ctx.DAG.Config["threshold"]
 		fmt.Println("[custom_dag] Start job running")
-		ctx.SetXCom("val", 99)
+		ctx.SetXCom("val", val)
 	})
 
 	branch := d.NewBranchJob("branch", func(ctx *dag.Context) []string {
+		var get_xcom string
 		val := ctx.GetXCom("val").(int)
+		get_xcom = fmt.Sprintf("%d<< get xcom\n", val)
+		fmt.Print(get_xcom)
 		if val > 50 {
 			fmt.Println("[custom_dag] Pilih print_A")
 			return []string{"print_A"}

@@ -28,34 +28,34 @@ func (c *Context) GetXCom(key string) interface{} {
 
 type Job struct {
 	ID         string
-	Action     func(ctx *Context)
-	BranchFunc func(ctx *Context) []string
-	Depends    []*Job
+	action     func(ctx *Context)
+	branchFunc func(ctx *Context) []string
+	depends    []*Job
 	status     string
 	statusLock sync.Mutex
 }
 
-func (j *Job) DependsOn(parents ...*Job) {
-	j.Depends = append(j.Depends, parents...)
+func (j *Job) dependsOn(parents ...*Job) {
+	j.depends = append(j.depends, parents...)
 }
 
 func (j *Job) Then(next *Job) *Job {
-	next.DependsOn(j)
+	next.dependsOn(j)
 	return next
 }
 
 func (j *Job) Branch(nexts ...*Job) {
 	for _, next := range nexts {
-		next.DependsOn(j)
+		next.dependsOn(j)
 	}
 }
 
 type DAG struct {
 	Name       string
 	Schedule   string
-	Config     map[string]interface{}
+	Config     map[string]any
 	Jobs       []*Job
-	xcom       map[string]interface{}
+	xcom       map[string]any
 	xcomLock   sync.Mutex
 	wg         sync.WaitGroup
 	jobMap     map[string]*Job
@@ -145,14 +145,14 @@ func (d *DAG) TriggerDAGWithConfig(dagName string, config map[string]any, blocki
 }
 
 func (d *DAG) NewJob(id string, action func(ctx *Context)) *Job {
-	job := &Job{ID: id, Action: action, status: "pending"}
+	job := &Job{ID: id, action: action, status: "pending"}
 	d.Jobs = append(d.Jobs, job)
 	d.jobMap[id] = job
 	return job
 }
 
 func (d *DAG) NewBranchJob(id string, branchFunc func(ctx *Context) []string) *Job {
-	job := &Job{ID: id, BranchFunc: branchFunc, status: "pending"}
+	job := &Job{ID: id, branchFunc: branchFunc, status: "pending"}
 	d.Jobs = append(d.Jobs, job)
 	d.jobMap[id] = job
 	return job
@@ -251,7 +251,7 @@ func (d *DAG) runDAGWithContext(ctx context.Context) {
 	}
 
 	for _, job := range d.Jobs {
-		if len(job.Depends) == 0 {
+		if len(job.depends) == 0 {
 			jobWg.Add(1)
 			go d.runJobWithContext(job, myCtx, &jobWg, ctx)
 		}
@@ -264,7 +264,7 @@ func (d *DAG) runJobWithContext(j *Job, ctx *Context, jobWg *sync.WaitGroup, dag
 
 	if len(d.activeJobs) > 0 {
 		parentsSucceeded := true
-		for _, dep := range j.Depends {
+		for _, dep := range j.depends {
 			if dep.getStatus() != "success" {
 				parentsSucceeded = false
 				break
@@ -279,7 +279,7 @@ func (d *DAG) runJobWithContext(j *Job, ctx *Context, jobWg *sync.WaitGroup, dag
 		}
 	}
 
-	for _, dep := range j.Depends {
+	for _, dep := range j.depends {
 		for dep.getStatus() != "success" {
 			select {
 			case <-dagCtx.Done():
@@ -301,12 +301,12 @@ func (d *DAG) runJobWithContext(j *Job, ctx *Context, jobWg *sync.WaitGroup, dag
 		}
 	}()
 
-	if j.Action != nil {
-		j.Action(ctx)
+	if j.action != nil {
+		j.action(ctx)
 		j.setStatus("success")
 		d.Logf("Completed job %s", j.ID)
-	} else if j.BranchFunc != nil {
-		selected := j.BranchFunc(ctx)
+	} else if j.branchFunc != nil {
+		selected := j.branchFunc(ctx)
 		d.Logf("Branch %s selected %v", j.ID, selected)
 
 		for _, selID := range selected {
@@ -315,7 +315,7 @@ func (d *DAG) runJobWithContext(j *Job, ctx *Context, jobWg *sync.WaitGroup, dag
 
 		// Auto-skip child branch
 		for _, job := range d.Jobs {
-			if job == nil || job.BranchFunc != nil {
+			if job == nil || job.branchFunc != nil {
 				continue
 			}
 			if isBranchChild(job) && !contains(selected, job.ID) {
@@ -339,10 +339,10 @@ func (d *DAG) runJobWithContext(j *Job, ctx *Context, jobWg *sync.WaitGroup, dag
 	}
 
 	for _, child := range d.Jobs {
-		for _, dep := range child.Depends {
+		for _, dep := range child.depends {
 			if dep == j {
 				allDepOk := true
-				for _, dep := range child.Depends {
+				for _, dep := range child.depends {
 					if dep.getStatus() != "success" {
 						allDepOk = false
 						break
@@ -358,8 +358,8 @@ func (d *DAG) runJobWithContext(j *Job, ctx *Context, jobWg *sync.WaitGroup, dag
 }
 
 func isBranchChild(j *Job) bool {
-	for _, dep := range j.Depends {
-		if dep.BranchFunc != nil {
+	for _, dep := range j.depends {
+		if dep.branchFunc != nil {
 			return true
 		}
 	}
@@ -397,7 +397,7 @@ func (d *DAG) RerunDAG() {
 	ctx := &Context{DAG: d}
 	var jobWg sync.WaitGroup
 	for _, job := range d.Jobs {
-		if len(job.Depends) == 0 {
+		if len(job.depends) == 0 {
 			jobWg.Add(1)
 			go d.runJobWithContext(job, ctx, &jobWg, context.Background())
 		}
@@ -439,7 +439,7 @@ func (d *DAG) resetUpstream(job *Job, visited map[string]bool) {
 	}
 	visited[job.ID] = true
 	job.setStatus("pending")
-	for _, dep := range job.Depends {
+	for _, dep := range job.depends {
 		d.resetUpstream(dep, visited)
 	}
 }
@@ -471,7 +471,7 @@ func (d *DAG) PrintGraph() {
 	fmt.Printf("DAG: %s\n", d.Name)
 	visited := make(map[string]bool)
 	for _, job := range d.Jobs {
-		if len(job.Depends) == 0 {
+		if len(job.depends) == 0 {
 			d.printJobTree(job, "", true, visited)
 		}
 	}
@@ -497,7 +497,7 @@ func (d *DAG) printJobTree(j *Job, prefix string, isLast bool, visited map[strin
 func (d *DAG) getChildren(j *Job) []*Job {
 	var children []*Job
 	for _, job := range d.Jobs {
-		for _, dep := range job.Depends {
+		for _, dep := range job.depends {
 			if dep == j {
 				children = append(children, job)
 			}
