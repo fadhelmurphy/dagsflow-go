@@ -25,14 +25,12 @@ func (d *DAG) NewBigQueryJob(id string, queryPath string, params map[string]any)
 	}
 
 	job := d.NewJob(id, func(ctx *Context) {
-		// Baca isi file query template
 		raw, err := os.ReadFile(queryPath)
 		if err != nil {
 			d.LogErrorf("Failed to read query file %s: %v", queryPath, err)
 			return
 		}
 
-		// Register funcMap untuk mendukung xcom
 		funcMap := template.FuncMap{
 			"xcom": func(key string) string {
 				val := ctx.GetXCom(key)
@@ -57,7 +55,7 @@ func (d *DAG) NewBigQueryJob(id string, queryPath string, params map[string]any)
 		}
 		op.Query = buf.String()
 
-		// Render project_id (dari param atau XCom)
+		// Render project_id
 		projectID := ""
 		if val, ok := params["project_id"].(string); ok && val != "" {
 			var bufID bytes.Buffer
