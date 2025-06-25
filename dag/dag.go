@@ -29,13 +29,39 @@ func (c *Context) GetXCom(key string) interface{} {
 	return c.DAG.xcom[key]
 }
 
+type TriggerRule string
+
+const (
+	AllSuccess TriggerRule = "all_success"
+	AllFailed  TriggerRule = "all_failed"
+	Always     TriggerRule = "always"
+)
+
+type JobStatus string
+
+const (
+	JobPending JobStatus = "PENDING"
+	JobRunning JobStatus = "RUNNING"
+	JobSuccess JobStatus = "SUCCESS"
+	JobFailed  JobStatus = "FAILED"
+	JobSkipped JobStatus = "SKIPPED"
+)
+
 type Job struct {
-	ID         string
-	action     func(ctx *Context)
-	branchFunc func(ctx *Context) []string
-	depends    []*Job
-	status     string
-	statusLock sync.Mutex
+	ID          string
+	action      func(ctx *Context)
+	branchFunc  func(ctx *Context) []string
+	depends     []*Job
+	Upstreams   []*Job
+	Downstreams []*Job
+	TriggerRule TriggerRule
+	status      JobStatus
+	statusLock  sync.Mutex
+}
+
+func (j *Job) WithTriggerRule(rule TriggerRule) *Job {
+	j.TriggerRule = rule
+	return j
 }
 
 func (j *Job) dependsOn(parents ...*Job) {
@@ -52,24 +78,25 @@ func (j *Job) Branch(nexts ...*Job) {
 		next.dependsOn(j)
 	}
 }
+
 type Connection struct {
 	Type   string
 	Config map[string]any
 }
 
 type DAG struct {
-	Name       string
-	Schedule   string
-	Config     map[string]any
-	Jobs       []*Job
-	xcom       map[string]any
-	xcomLock   sync.Mutex
-	wg         sync.WaitGroup
-	jobMap     map[string]*Job
-	logFile    *os.File
-	logLock    sync.Mutex
-	activeJobs map[string]bool
-	Connections map[string]*Connection 
+	Name        string
+	Schedule    string
+	Config      map[string]any
+	Jobs        []*Job
+	xcom        map[string]any
+	xcomLock    sync.Mutex
+	wg          sync.WaitGroup
+	jobMap      map[string]*Job
+	logFile     *os.File
+	logLock     sync.Mutex
+	activeJobs  map[string]bool
+	Connections map[string]*Connection
 }
 
 var (
@@ -81,6 +108,35 @@ func Register(d *DAG) {
 	registryLock.Lock()
 	defer registryLock.Unlock()
 	dagRegistry[d.Name] = d
+}
+
+func (d *DAG) shouldRun(job *Job) bool {
+	switch job.TriggerRule {
+	case AllSuccess:
+		for _, upstream := range job.Upstreams {
+			if upstream.status != JobSuccess {
+				return false
+			}
+		}
+		return true
+	case AllFailed:
+		for _, upstream := range job.Upstreams {
+			if upstream.status != JobFailed {
+				return false
+			}
+		}
+		return true
+	case Always:
+		return true
+	default:
+		// Default ke AllSuccess
+		for _, upstream := range job.Upstreams {
+			if upstream.status != JobSuccess {
+				return false
+			}
+		}
+		return true
+	}
 }
 
 func (d *DAG) logLine(level, msg string) {
@@ -126,70 +182,68 @@ func NewDAG(name, schedule string, config ...map[string]any) *DAG {
 		cfg = make(map[string]any)
 	}
 	return &DAG{
-		Name:       name,
-		Schedule:   schedule,
-		Config:     cfg,
-		xcom:       make(map[string]interface{}),
-		jobMap:     make(map[string]*Job),
-		activeJobs: make(map[string]bool),
+		Name:        name,
+		Schedule:    schedule,
+		Config:      cfg,
+		xcom:        make(map[string]interface{}),
+		jobMap:      make(map[string]*Job),
+		activeJobs:  make(map[string]bool),
 		Connections: make(map[string]*Connection),
 	}
 }
 
 func LoadAllConnections(dir string) map[string]Connection {
-    connections := make(map[string]Connection)
+	connections := make(map[string]Connection)
 
-    entries, err := os.ReadDir(dir)
-    if err != nil {
-        fmt.Printf("Failed to read connections dir: %v\n", err)
-        return connections
-    }
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		fmt.Printf("Failed to read connections dir: %v\n", err)
+		return connections
+	}
 
-    for _, entry := range entries {
-        if entry.IsDir() {
-            continue
-        }
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
 
-        if filepath.Ext(entry.Name()) != ".json" {
-            continue
-        }
+		if filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
 
-        path := filepath.Join(dir, entry.Name())
-        raw, err := os.ReadFile(path)
-        if err != nil {
-            fmt.Printf("Failed to read connection file %s: %v\n", path, err)
-            continue
-        }
+		path := filepath.Join(dir, entry.Name())
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			fmt.Printf("Failed to read connection file %s: %v\n", path, err)
+			continue
+		}
 
-        var connMap map[string]Connection
-        if err := json.Unmarshal(raw, &connMap); err != nil {
-            fmt.Printf("Failed to parse connection file %s: %v\n", path, err)
-            continue
-        }
+		var connMap map[string]Connection
+		if err := json.Unmarshal(raw, &connMap); err != nil {
+			fmt.Printf("Failed to parse connection file %s: %v\n", path, err)
+			continue
+		}
 
-        // Merge ke connections global
-        for k, v := range connMap {
-            connections[k] = v
-        }
+		// Merge ke connections global
+		for k, v := range connMap {
+			connections[k] = v
+		}
 
-        fmt.Printf("Loaded connections from %s\n", path)
-    }
+		fmt.Printf("Loaded connections from %s\n", path)
+	}
 
-    if os.Getenv("GOOGLE_APPLICATION_CREDENTIALS") != "" {
-        connections["env_bigquery"] = Connection{
-            Type: "bigquery",
-            Config: map[string]any{
-                "credentials_path": os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"),
-                "project_id": os.Getenv("GOOGLE_CLOUD_PROJECT"),
-            },
-        }
-        fmt.Println("Loaded env_bigquery connection from ENV")
-    }
+	if os.Getenv("GOOGLE_APPLICATION_CREDENTIALS") != "" {
+		connections["env_bigquery"] = Connection{
+			Type: "bigquery",
+			Config: map[string]any{
+				"credentials_path": os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"),
+				"project_id":       os.Getenv("GOOGLE_CLOUD_PROJECT"),
+			},
+		}
+		fmt.Println("Loaded env_bigquery connection from ENV")
+	}
 
-    return connections
+	return connections
 }
-
-
 
 func (d *DAG) TriggerDAGWithConfig(dagName string, config map[string]any, blocking bool) {
 	if target, ok := Get(dagName); ok {
@@ -209,14 +263,19 @@ func (d *DAG) TriggerDAGWithConfig(dagName string, config map[string]any, blocki
 }
 
 func (d *DAG) NewJob(id string, action func(ctx *Context)) *Job {
-	job := &Job{ID: id, action: action, status: "pending"}
+	job := &Job{
+		ID: id, 
+		action: action, 
+		status: "PENDING",
+		TriggerRule:  Always,
+	}
 	d.Jobs = append(d.Jobs, job)
 	d.jobMap[id] = job
 	return job
 }
 
 func (d *DAG) NewBranchJob(id string, branchFunc func(ctx *Context) []string) *Job {
-	job := &Job{ID: id, branchFunc: branchFunc, status: "pending"}
+	job := &Job{ID: id, branchFunc: branchFunc, status: "PENDING"}
 	d.Jobs = append(d.Jobs, job)
 	d.jobMap[id] = job
 	return job
@@ -311,7 +370,7 @@ func (d *DAG) runDAGWithContext(ctx context.Context) {
 	var jobWg sync.WaitGroup
 
 	for _, job := range d.Jobs {
-		job.setStatus("pending")
+		job.setStatus("PENDING")
 	}
 
 	for _, job := range d.Jobs {
@@ -329,7 +388,7 @@ func (d *DAG) runJobWithContext(j *Job, ctx *Context, jobWg *sync.WaitGroup, dag
 	if len(d.activeJobs) > 0 {
 		parentsSucceeded := true
 		for _, dep := range j.depends {
-			if dep.getStatus() != "success" {
+			if dep.getStatus() != "SUCCESS" {
 				parentsSucceeded = false
 				break
 			}
@@ -344,7 +403,7 @@ func (d *DAG) runJobWithContext(j *Job, ctx *Context, jobWg *sync.WaitGroup, dag
 	}
 
 	for _, dep := range j.depends {
-		for dep.getStatus() != "success" {
+		for dep.getStatus() != "SUCCESS" {
 			select {
 			case <-dagCtx.Done():
 				d.LogErrorf("Job %s canceled", j.ID)
@@ -361,13 +420,13 @@ func (d *DAG) runJobWithContext(j *Job, ctx *Context, jobWg *sync.WaitGroup, dag
 	defer func() {
 		if r := recover(); r != nil {
 			d.LogErrorf("Job %s panic: %v", j.ID, r)
-			j.setStatus("failed")
+			j.setStatus("FAILED")
 		}
 	}()
 
 	if j.action != nil {
 		j.action(ctx)
-		j.setStatus("success")
+		j.setStatus("SUCCESS")
 		d.Logf("Completed job %s", j.ID)
 	} else if j.branchFunc != nil {
 		selected := j.branchFunc(ctx)
@@ -384,11 +443,11 @@ func (d *DAG) runJobWithContext(j *Job, ctx *Context, jobWg *sync.WaitGroup, dag
 			}
 			if isBranchChild(job) && !contains(selected, job.ID) {
 				d.Logf("Skipping job %s (auto-success to unblock DAG)", job.ID)
-				job.setStatus("success")
+				job.setStatus("SKIPPED")
 			}
 		}
 
-		j.setStatus("success")
+		j.setStatus("SUCCESS")
 
 		for _, selID := range selected {
 			if child, ok := d.jobMap[selID]; ok {
@@ -398,7 +457,7 @@ func (d *DAG) runJobWithContext(j *Job, ctx *Context, jobWg *sync.WaitGroup, dag
 		}
 		return
 	} else {
-		j.setStatus("success")
+		j.setStatus("SUCCESS")
 		d.Logf("Completed job %s", j.ID)
 	}
 
@@ -407,7 +466,7 @@ func (d *DAG) runJobWithContext(j *Job, ctx *Context, jobWg *sync.WaitGroup, dag
 			if dep == j {
 				allDepOk := true
 				for _, dep := range child.depends {
-					if dep.getStatus() != "success" {
+					if dep.getStatus() != "SUCCESS" {
 						allDepOk = false
 						break
 					}
@@ -452,11 +511,10 @@ func (d *DAG) markDownstreamActive(jobID string) {
 	}
 }
 
-
 func (d *DAG) RerunDAG() {
 	d.Logf("Rerunning DAG: %s", d.Name)
 	for _, job := range d.Jobs {
-		job.setStatus("pending")
+		job.setStatus("PENDING")
 	}
 	ctx := &Context{DAG: d}
 	var jobWg sync.WaitGroup
@@ -486,7 +544,7 @@ func (d *DAG) RerunJob(jobID string, downstream bool, upstream bool) {
 		d.resetDownstream(target, visited)
 	}
 	if !upstream && !downstream {
-		target.setStatus("pending")
+		target.setStatus("PENDING")
 	}
 
 	// Run
@@ -502,7 +560,7 @@ func (d *DAG) resetUpstream(job *Job, visited map[string]bool) {
 		return
 	}
 	visited[job.ID] = true
-	job.setStatus("pending")
+	job.setStatus("PENDING")
 	for _, dep := range job.depends {
 		d.resetUpstream(dep, visited)
 	}
@@ -513,19 +571,19 @@ func (d *DAG) resetDownstream(job *Job, visited map[string]bool) {
 		return
 	}
 	visited[job.ID] = true
-	job.setStatus("pending")
+	job.setStatus("PENDING")
 	for _, child := range d.getChildren(job) {
 		d.resetDownstream(child, visited)
 	}
 }
 
-func (j *Job) getStatus() string {
+func (j *Job) getStatus() JobStatus {
 	j.statusLock.Lock()
 	defer j.statusLock.Unlock()
 	return j.status
 }
 
-func (j *Job) setStatus(s string) {
+func (j *Job) setStatus(s JobStatus) {
 	j.statusLock.Lock()
 	defer j.statusLock.Unlock()
 	j.status = s

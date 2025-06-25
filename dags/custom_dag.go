@@ -45,8 +45,12 @@ func init() {
 		ctx.DAG.Logf("Print C")
 	})
 
-	finish := d.NewJob("finish", func(ctx *dag.Context) {
-		ctx.DAG.Logf("Finish job")
+	finishA := d.NewJob("finishA", func(ctx *dag.Context) {
+		ctx.DAG.Logf("Finish job A")
+	})
+
+	finishB := d.NewJob("finishB", func(ctx *dag.Context) {
+		ctx.DAG.Logf("Finish job B")
 	})
 
 	triggerJob := d.NewJob("trigger_dag_branch", func(ctx *dag.Context) {
@@ -77,9 +81,9 @@ func init() {
 	start.Then(branch)
 	branch.Branch(printA, printB)
 	printA.Then(printC)
-	printC.Then(finish)
-	printB.Then(finish)
-	finish.Then(bqJob).Then(triggerBlockingJob).Then(triggerJob)
+	printC.Then(finishA)
+	printB.Then(finishB)
+	finishA.Then(bqJob).Then(triggerBlockingJob).Then(triggerJob)
 
 	dag.Register(d)
 }
