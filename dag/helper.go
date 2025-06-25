@@ -7,6 +7,16 @@ import (
 	"text/template"
 )
 
+func RenderStringTemplate(raw string, params map[string]any) (string, error) {
+	tmpl, err := template.New("param").Parse(raw)
+	if err != nil {
+		return "", err
+	}
+	var buf bytes.Buffer
+	err = tmpl.Execute(&buf, params)
+	return buf.String(), err
+}
+
 func (d *DAG) NewBigQueryJob(id string, queryPath string, params map[string]any) *Job {
 	op := &operator.BigQueryOperator{
 		TaskID:    id,
@@ -15,15 +25,26 @@ func (d *DAG) NewBigQueryJob(id string, queryPath string, params map[string]any)
 	}
 
 	job := d.NewJob(id, func(ctx *Context) {
-		// Baca file query template
+		// Baca isi file query template
 		raw, err := os.ReadFile(queryPath)
 		if err != nil {
 			d.LogErrorf("Failed to read query file %s: %v", queryPath, err)
 			return
 		}
 
-		// Render template
-		tmpl, err := template.New("bq_query").Parse(string(raw))
+		// Register funcMap untuk mendukung xcom
+		funcMap := template.FuncMap{
+			"xcom": func(key string) string {
+				val := ctx.GetXCom(key)
+				if str, ok := val.(string); ok {
+					return str
+				}
+				return ""
+			},
+		}
+
+		// Parse & render template SQL
+		tmpl, err := template.New("bq_query").Funcs(funcMap).Parse(string(raw))
 		if err != nil {
 			d.LogErrorf("Failed to parse query template: %v", err)
 			return
@@ -36,14 +57,19 @@ func (d *DAG) NewBigQueryJob(id string, queryPath string, params map[string]any)
 		}
 		op.Query = buf.String()
 
-		// Resolve projectID
+		// Render project_id (dari param atau XCom)
 		projectID := ""
 		if val, ok := params["project_id"].(string); ok && val != "" {
+			var bufID bytes.Buffer
+			tmplID, _ := template.New("project_id").Funcs(funcMap).Parse(val)
+			_ = tmplID.Execute(&bufID, params)
+			projectID = bufID.String()
+		} else if val, ok := ctx.GetXCom("project_id").(string); ok {
 			projectID = val
-		} else if val, ok := d.Config["project_id"].(string); ok && val != "" {
+		} else if val, ok := d.Config["project_id"].(string); ok {
 			projectID = val
 		} else if conn, ok := d.Connections["env_bigquery"]; ok {
-			if val, ok := conn.Config["project_id"].(string); ok && val != "" {
+			if val, ok := conn.Config["project_id"].(string); ok {
 				projectID = val
 			}
 		}

@@ -1,1 +1,1 @@
-SELECT "{{ target_dataset }}.{{ target_table }}" AS full_table_name
+SELECT * FROM `{{xcom "project_id"}}.{{ .target_dataset }}.{{ .target_table }}` limit 10

@@ -2,7 +2,7 @@
   "env_bigquery": {
     "Type": "bigquery",
     "Config": {
-      "project_id": "idf-corp-dev"
+      "project_id": "fadhel-project"
     }
   }
 }

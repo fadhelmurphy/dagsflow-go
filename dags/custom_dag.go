@@ -8,15 +8,18 @@ import (
 func init() {
 
 	config := map[string]any{
-		"threshold": 99,
-		"message":   "Hello from config",
+		"threshold":  99,
+		"message":    "Hello from config",
+		"project_id": "fadhel-project",
 	}
-	d := dag.NewDAG("custom_dag", "*/1 * * * *", config)
+	d := dag.NewDAG("custom_dag", "@every 1s", config)
 
 	start := d.NewJob("start", func(ctx *dag.Context) {
 		val := ctx.DAG.Config["threshold"]
+		project_id := ctx.DAG.Config["project_id"]
 		fmt.Println("[custom_dag] Start job running")
 		ctx.SetXCom("val", val)
+		ctx.SetXCom("project_id", project_id)
 	})
 
 	branch := d.NewBranchJob("branch", func(ctx *dag.Context) []string {
@@ -64,10 +67,10 @@ func init() {
 		ctx.DAG.TriggerDAGWithConfig("dag1", config, true)
 	})
 
-	bqJob := d.NewBigQueryJob("bq_task_1", "dags/dw_to_tmp.sql", map[string]any{
-		"project_id":     "idf-corp-dev",
-		"target_dataset": "tmp_ds",
-		"target_table":   "tmp_table",
+	bqJob := d.NewBigQueryJob("bq_task_1", "dags/sql/dw_to_tmp.sql", map[string]any{
+		"project_id":     `{{xcom "project_id"}}`,
+		"target_dataset": "dw_ext_data",
+		"target_table":   "kemdikbud_ref_satpen_npsn",
 	})
 
 	// setup dependency
