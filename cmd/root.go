@@ -29,7 +29,6 @@ func writePidFiles(dagName string, pid int) error {
 	return nil
 }
 
-
 func stopByPidFile(dagName string) error {
 	pidFile := fmt.Sprintf("dagsflow-pid/%s.pid", dagName)
 	data, err := os.ReadFile(pidFile)
@@ -51,7 +50,6 @@ func stopByPidFile(dagName string) error {
 	os.Remove(fmt.Sprintf("dagsflow-pid/%s.running", dagName))
 	return nil
 }
-
 
 var rootCmd = &cobra.Command{
 	Use:   "dagsflow-go",
@@ -84,6 +82,11 @@ var internalRunCmd = &cobra.Command{
 		if !ok {
 			fmt.Println("DAG not found:", dagName)
 			return
+		}
+
+		// Autoload connection file
+		if err := dag.LoadAllConnections("connections"); err != nil {
+				fmt.Printf("Failed to load connections: %v\n", err)
 		}
 
 		c := make(chan os.Signal, 1)
@@ -215,7 +218,7 @@ var logCmd = &cobra.Command{
 }
 
 var rerunDagCmd = &cobra.Command{
-	Use: "rerun-dag [dag_name]",
+	Use:   "rerun-dag [dag_name]",
 	Short: "Rerun entire DAG",
 	Run: func(cmd *cobra.Command, args []string) {
 		if len(args) < 1 {
@@ -232,7 +235,7 @@ var rerunDagCmd = &cobra.Command{
 }
 
 var rerunJobCmd = &cobra.Command{
-	Use: "rerun-job [dag_name] [job_id]",
+	Use:   "rerun-job [dag_name] [job_id]",
 	Short: "Rerun job in DAG",
 	Run: func(cmd *cobra.Command, args []string) {
 		if len(args) < 2 {
@@ -250,7 +253,6 @@ var rerunJobCmd = &cobra.Command{
 		d.RerunJob(jobID, downstream, upstream)
 	},
 }
-
 
 func Execute() {
 	rootCmd.AddCommand(runCmd)

@@ -20,10 +20,8 @@ func init() {
 	})
 
 	branch := d.NewBranchJob("branch", func(ctx *dag.Context) []string {
-		var get_xcom string
 		val := ctx.GetXCom("val").(int)
-		get_xcom = fmt.Sprintf("%d<< get xcom\n", val)
-		fmt.Print(get_xcom)
+		fmt.Printf("%d << get xcom\n", val)
 		if val > 50 {
 			fmt.Println("[custom_dag] Pilih print_A")
 			return []string{"print_A"}
@@ -63,9 +61,14 @@ func init() {
 			"param1": "value1",
 			"param2": 42,
 		}
-		// ctx.DAG.TriggerDAGBlocking("dag1") // tanpa config
-		ctx.DAG.TriggerDAGWithConfig("dag1", config, true) // dengan config
-	}) // Blocking (perlu nunggu triggered dag nya kelar)
+		ctx.DAG.TriggerDAGWithConfig("dag1", config, true)
+	})
+
+	bqJob := d.NewBigQueryJob("bq_task_1", "dags/dw_to_tmp.sql", map[string]any{
+		"project_id":     "idf-corp-dev",
+		"target_dataset": "tmp_ds",
+		"target_table":   "tmp_table",
+	})
 
 	// setup dependency
 	start.Then(branch)
@@ -73,7 +76,7 @@ func init() {
 	printA.Then(printC)
 	printC.Then(finish)
 	printB.Then(finish)
-	finish.Then(triggerBlockingJob).Then(triggerJob)
+	finish.Then(bqJob).Then(triggerBlockingJob).Then(triggerJob)
 
 	dag.Register(d)
 }

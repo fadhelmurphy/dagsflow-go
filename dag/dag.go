@@ -3,11 +3,14 @@ package dag
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
-	"github.com/robfig/cron/v3"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/robfig/cron/v3"
 )
 
 type Context struct {
@@ -49,6 +52,10 @@ func (j *Job) Branch(nexts ...*Job) {
 		next.dependsOn(j)
 	}
 }
+type Connection struct {
+	Type   string
+	Config map[string]any
+}
 
 type DAG struct {
 	Name       string
@@ -62,6 +69,7 @@ type DAG struct {
 	logFile    *os.File
 	logLock    sync.Mutex
 	activeJobs map[string]bool
+	Connections map[string]*Connection 
 }
 
 var (
@@ -124,8 +132,64 @@ func NewDAG(name, schedule string, config ...map[string]any) *DAG {
 		xcom:       make(map[string]interface{}),
 		jobMap:     make(map[string]*Job),
 		activeJobs: make(map[string]bool),
+		Connections: make(map[string]*Connection),
 	}
 }
+
+func LoadAllConnections(dir string) map[string]Connection {
+    connections := make(map[string]Connection)
+
+    entries, err := os.ReadDir(dir)
+    if err != nil {
+        fmt.Printf("Failed to read connections dir: %v\n", err)
+        return connections
+    }
+
+    for _, entry := range entries {
+        if entry.IsDir() {
+            continue
+        }
+
+        if filepath.Ext(entry.Name()) != ".json" {
+            continue
+        }
+
+        path := filepath.Join(dir, entry.Name())
+        raw, err := os.ReadFile(path)
+        if err != nil {
+            fmt.Printf("Failed to read connection file %s: %v\n", path, err)
+            continue
+        }
+
+        var connMap map[string]Connection
+        if err := json.Unmarshal(raw, &connMap); err != nil {
+            fmt.Printf("Failed to parse connection file %s: %v\n", path, err)
+            continue
+        }
+
+        // Merge ke connections global
+        for k, v := range connMap {
+            connections[k] = v
+        }
+
+        fmt.Printf("Loaded connections from %s\n", path)
+    }
+
+    if os.Getenv("GOOGLE_APPLICATION_CREDENTIALS") != "" {
+        connections["env_bigquery"] = Connection{
+            Type: "bigquery",
+            Config: map[string]any{
+                "credentials_path": os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"),
+                "project_id": os.Getenv("GOOGLE_CLOUD_PROJECT"),
+            },
+        }
+        fmt.Println("Loaded env_bigquery connection from ENV")
+    }
+
+    return connections
+}
+
+
 
 func (d *DAG) TriggerDAGWithConfig(dagName string, config map[string]any, blocking bool) {
 	if target, ok := Get(dagName); ok {

@@ -1,0 +1,8 @@
+{
+  "env_bigquery": {
+    "Type": "bigquery",
+    "Config": {
+      "project_id": "idf-corp-dev"
+    }
+  }
+}
