@@ -3,6 +3,7 @@ package operator
 import (
 	"cloud.google.com/go/bigquery"
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -14,24 +15,29 @@ type BigQueryOperator struct {
 	LogErrorf func(format string, args ...interface{})
 }
 
-func (op *BigQueryOperator) Execute() {
+func (op *BigQueryOperator) Execute() error {
 	if op.ProjectID == "" {
-		op.LogErrorf("[BigQueryOperator %s] Project ID is empty", op.TaskID)
-		return
+		err := fmt.Errorf("project ID is empty")
+		op.LogErrorf("[BigQueryOperator %s] %v", op.TaskID, err)
+		return err
 	}
+
 	if op.Query == "" {
-		op.LogErrorf("[BigQueryOperator %s] Query is empty", op.TaskID)
-		return
+		err := fmt.Errorf("query is empty")
+		op.LogErrorf("[BigQueryOperator %s] %v", op.TaskID, err)
+		return err
 	}
 
 	op.Logf("[BigQueryOperator %s] Running query on project %s", op.TaskID, op.ProjectID)
 	op.Logf("[BigQueryOperator %s] Query:\n%s", op.TaskID, op.Query)
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
 	client, err := bigquery.NewClient(ctx, op.ProjectID)
 	if err != nil {
 		op.LogErrorf("[BigQueryOperator %s] Failed to create client: %v", op.TaskID, err)
-		return
+		return fmt.Errorf("failed to create BQ client: %w", err)
 	}
 	defer client.Close()
 
@@ -39,19 +45,20 @@ func (op *BigQueryOperator) Execute() {
 	job, err := q.Run(ctx)
 	if err != nil {
 		op.LogErrorf("[BigQueryOperator %s] Failed to start query: %v", op.TaskID, err)
-		return
+		return fmt.Errorf("failed to start BQ query: %w", err)
 	}
 
 	status, err := job.Wait(ctx)
 	if err != nil {
 		op.LogErrorf("[BigQueryOperator %s] Query wait failed: %v", op.TaskID, err)
-		return
+		return fmt.Errorf("query wait failed: %w", err)
 	}
 
 	if err := status.Err(); err != nil {
 		op.LogErrorf("[BigQueryOperator %s] Query execution error: %v", op.TaskID, err)
-		return
+		return fmt.Errorf("query execution error: %w", err)
 	}
 
 	op.Logf("[BigQueryOperator %s] Query executed successfully at %v", op.TaskID, time.Now())
+	return nil
 }

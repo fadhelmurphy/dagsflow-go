@@ -7,11 +7,12 @@ import (
 )
 
 func init() {
-	d := dag.NewDAG("dag1", "*/1 * * * *")
+	d := dag.NewDAG("dag1", "@every 1s")
 	a := d.NewJob("a", func(ctx *dag.Context) {
 		ctx.DAG.Logf("[DAG1] Run A PAKE LOGF")
 		fmt.Println("[DAG1] Run A")
 		ctx.SetXCom("sebuah-key", "sebuah-nilai")
+		panic("something went wrong!")
 
 	})
 	b := d.NewJob("b", func(ctx *dag.Context) {

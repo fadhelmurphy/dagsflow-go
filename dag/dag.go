@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"dagsflow-go/operator"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
+	"text/template"
 
 	"github.com/robfig/cron/v3"
 )
@@ -56,7 +58,7 @@ type Job struct {
 	Downstreams []*Job
 	TriggerRule TriggerRule
 	status      JobStatus
-	statusLock  sync.Mutex
+	statusLock  sync.Mutex // Mutex for Job status
 }
 
 func (j *Job) WithTriggerRule(rule TriggerRule) *Job {
@@ -66,6 +68,9 @@ func (j *Job) WithTriggerRule(rule TriggerRule) *Job {
 
 func (j *Job) dependsOn(parents ...*Job) {
 	j.depends = append(j.depends, parents...)
+	for _, p := range parents {
+		j.Upstreams = append(j.Upstreams, p)
+	}
 }
 
 func (j *Job) Then(next *Job) *Job {
@@ -85,18 +90,19 @@ type Connection struct {
 }
 
 type DAG struct {
-	Name        string
-	Schedule    string
-	Config      map[string]any
-	Jobs        []*Job
-	xcom        map[string]any
-	xcomLock    sync.Mutex
-	wg          sync.WaitGroup
-	jobMap      map[string]*Job
-	logFile     *os.File
-	logLock     sync.Mutex
-	activeJobs  map[string]bool
-	Connections map[string]*Connection
+	Name           string
+	Schedule       string
+	Config         map[string]any
+	Jobs           []*Job
+	xcom           map[string]any
+	xcomLock       sync.Mutex
+	wg             sync.WaitGroup
+	jobMap         map[string]*Job
+	logFile        *os.File
+	logLock        sync.Mutex
+	activeJobs     map[string]bool
+	activeJobsLock sync.Mutex // Mutex untuk melindungi map activeJobs
+	Connections    map[string]*Connection
 }
 
 var (
@@ -111,27 +117,29 @@ func Register(d *DAG) {
 }
 
 func (d *DAG) shouldRun(job *Job) bool {
+	// Untuk menghindari deadlock, getStatus() menggunakan mutex internalnya sendiri.
+	// Kita tidak perlu mengunci activeJobsLock di sini karena kita hanya membaca status job
+	// yang dilindungi oleh mutex job masing-masing.
 	switch job.TriggerRule {
 	case AllSuccess:
 		for _, upstream := range job.Upstreams {
-			if upstream.status != JobSuccess {
+			if upstream.getStatus() != JobSuccess { // Menggunakan getStatus()
 				return false
 			}
 		}
 		return true
 	case AllFailed:
 		for _, upstream := range job.Upstreams {
-			if upstream.status != JobFailed {
+			if upstream.getStatus() != JobFailed { // Menggunakan getStatus()
 				return false
 			}
 		}
 		return true
 	case Always:
 		return true
-	default:
-		// Default ke AllSuccess
+	default: // Default trigger rule is AllSuccess
 		for _, upstream := range job.Upstreams {
-			if upstream.status != JobSuccess {
+			if upstream.getStatus() != JobSuccess { // Menggunakan getStatus()
 				return false
 			}
 		}
@@ -144,7 +152,7 @@ func (d *DAG) logLine(level, msg string) {
 	d.logLock.Lock()
 	defer d.logLock.Unlock()
 	d.logFile.WriteString(line)
-	d.logFile.Sync()
+	// d.logFile.Sync() // Tidak perlu Sync setiap baris, bisa jadi overhead. Sync jika penting.
 }
 
 func (d *DAG) Logf(format string, args ...interface{}) {
@@ -182,13 +190,13 @@ func NewDAG(name, schedule string, config ...map[string]any) *DAG {
 		cfg = make(map[string]any)
 	}
 	return &DAG{
-		Name:        name,
-		Schedule:    schedule,
-		Config:      cfg,
-		xcom:        make(map[string]interface{}),
-		jobMap:      make(map[string]*Job),
-		activeJobs:  make(map[string]bool),
-		Connections: make(map[string]*Connection),
+		Name:           name,
+		Schedule:       schedule,
+		Config:         cfg,
+		xcom:           make(map[string]interface{}),
+		jobMap:         make(map[string]*Job),
+		activeJobs:     make(map[string]bool),
+		Connections:    make(map[string]*Connection),
 	}
 }
 
@@ -249,6 +257,9 @@ func (d *DAG) TriggerDAGWithConfig(dagName string, config map[string]any, blocki
 	if target, ok := Get(dagName); ok {
 		d.Logf("Triggering DAG %s from DAG %s with config %v", dagName, d.Name, config)
 
+		// Hati-hati mengubah config secara langsung jika target.Config juga diakses
+		// oleh goroutine lain tanpa proteksi. Namun, dalam konteks trigger,
+		// biasanya ini adalah inisialisasi awal.
 		target.Config = config
 
 		ctx := context.Background()
@@ -264,10 +275,10 @@ func (d *DAG) TriggerDAGWithConfig(dagName string, config map[string]any, blocki
 
 func (d *DAG) NewJob(id string, action func(ctx *Context)) *Job {
 	job := &Job{
-		ID: id, 
-		action: action, 
-		status: "PENDING",
-		TriggerRule:  Always,
+		ID:          id,
+		action:      action,
+		status:      JobPending, // Menggunakan konstanta JobPending
+		TriggerRule: Always,
 	}
 	d.Jobs = append(d.Jobs, job)
 	d.jobMap[id] = job
@@ -275,9 +286,74 @@ func (d *DAG) NewJob(id string, action func(ctx *Context)) *Job {
 }
 
 func (d *DAG) NewBranchJob(id string, branchFunc func(ctx *Context) []string) *Job {
-	job := &Job{ID: id, branchFunc: branchFunc, status: "PENDING"}
+	job := &Job{ID: id, branchFunc: branchFunc, status: JobPending} // Menggunakan konstanta JobPending
 	d.Jobs = append(d.Jobs, job)
 	d.jobMap[id] = job
+	return job
+}
+
+func (d *DAG) NewBigQueryJob(id string, queryPath string, params map[string]any) *Job {
+	op := &operator.BigQueryOperator{
+		TaskID:    id,
+		Logf:      d.Logf,
+		LogErrorf: d.LogErrorf,
+	}
+
+	job := d.NewJob(id, func(ctx *Context) {
+		raw, err := os.ReadFile(queryPath)
+		if err != nil {
+			d.LogErrorf("Failed to read query file %s: %v", queryPath, err)
+			panic(err) // ← trigger panic untuk deteksi gagal
+		}
+
+		funcMap := template.FuncMap{
+			"xcom": func(key string) string {
+				val := ctx.GetXCom(key)
+				if str, ok := val.(string); ok {
+					return str
+				}
+				return ""
+			},
+		}
+
+		// Parse & render template SQL
+		tmpl, err := template.New("bq_query").Funcs(funcMap).Parse(string(raw))
+		if err != nil {
+			d.LogErrorf("Failed to parse query template: %v", err)
+			panic(err)
+		}
+
+		var buf bytes.Buffer
+		if err := tmpl.Execute(&buf, params); err != nil {
+			d.LogErrorf("Failed to render query template: %v", err)
+			panic(err)
+		}
+		op.Query = buf.String()
+
+		// Render project_id
+		projectID := ""
+		if val, ok := params["project_id"].(string); ok && val != "" {
+			var bufID bytes.Buffer
+			tmplID, _ := template.New("project_id").Funcs(funcMap).Parse(val)
+			_ = tmplID.Execute(&bufID, params)
+			projectID = bufID.String()
+		} else if val, ok := ctx.GetXCom("project_id").(string); ok {
+			projectID = val
+		} else if val, ok := d.Config["project_id"].(string); ok {
+			projectID = val
+		} else if conn, ok := d.Connections["env_bigquery"]; ok {
+			if val, ok := conn.Config["project_id"].(string); ok {
+				projectID = val
+			}
+		}
+
+		op.ProjectID = projectID
+
+		if err := op.Execute(); err != nil {
+			panic(err)
+		}
+	})
+
 	return job
 }
 
@@ -336,6 +412,10 @@ func (d *DAG) Run() {
 		defer cancel()
 
 		d.Logf("Cron triggered for DAG %s", d.Name)
+		// Reset activeJobs for a new cron run
+		d.activeJobsLock.Lock()
+		d.activeJobs = make(map[string]bool) 
+		d.activeJobsLock.Unlock()
 		go d.runDAGWithContext(ctx)
 	})
 	c.Start()
@@ -364,120 +444,153 @@ func (d *DAG) RunWithContext(ctx context.Context) {
 }
 
 func (d *DAG) runDAGWithContext(ctx context.Context) {
+	// Inisialisasi atau reset activeJobs di awal setiap runDAGWithContext
+	// Ini penting agar setiap eksekusi DAG dimulai dengan daftar job aktif yang bersih.
+	d.activeJobsLock.Lock()
 	d.activeJobs = make(map[string]bool)
+	d.activeJobsLock.Unlock()
 	d.Logf("Running DAG: %s", d.Name)
+
 	myCtx := &Context{DAG: d}
 	var jobWg sync.WaitGroup
 
 	for _, job := range d.Jobs {
-		job.setStatus("PENDING")
+		job.setStatus(JobPending) // Reset status job ke PENDING untuk setiap run
 	}
 
 	for _, job := range d.Jobs {
-		if len(job.depends) == 0 {
+		if len(job.depends) == 0 && d.shouldRun(job) {
 			jobWg.Add(1)
 			go d.runJobWithContext(job, myCtx, &jobWg, ctx)
 		}
 	}
+
 	jobWg.Wait()
+	d.Logf("DAG %s finished.", d.Name)
+}
+
+func (d *DAG) waitUntilParentsDone(j *Job, dagCtx context.Context) bool {
+	for {
+		allDone := true
+		for _, dep := range j.depends {
+			status := dep.getStatus() // Menggunakan getStatus()
+			if status != JobSuccess && status != JobFailed && status != JobSkipped {
+				allDone = false
+				break
+			}
+		}
+		if allDone {
+			return true
+		}
+		select {
+		case <-dagCtx.Done():
+			d.LogErrorf("Job %s canceled before parent finished", j.ID)
+			return false
+		default:
+			time.Sleep(300 * time.Millisecond)
+		}
+	}
+}
+
+func (d *DAG) markJobActive(j *Job) {
+	d.activeJobsLock.Lock()   // Kunci map activeJobs
+	defer d.activeJobsLock.Unlock() // Pastikan kunci dilepaskan
+
+	if !d.activeJobs[j.ID] {
+		d.activeJobs[j.ID] = true
+	}
+}
+
+func (d *DAG) recoverFromPanic(j *Job) {
+	if r := recover(); r != nil {
+		j.setStatus(JobFailed) // Menggunakan setStatus()
+		d.LogErrorf("Job %s panic: %v", j.ID, r)
+	}
+}
+
+func (d *DAG) runActionJob(j *Job, ctx *Context) {
+	j.action(ctx)
+	j.setStatus(JobSuccess) // Menggunakan setStatus()
+	d.Logf("Completed job %s", j.ID)
+}
+
+func (d *DAG) runBranchJob(j *Job, ctx *Context, jobWg *sync.WaitGroup, dagCtx context.Context) {
+	selected := j.branchFunc(ctx)
+	d.Logf("Branch %s selected %v", j.ID, selected)
+
+	// Mark downstream active for selected branches
+	for _, selID := range selected {
+		d.markDownstreamActive(selID)
+	}
+
+	// Skip yang tidak dipilih
+	for _, job := range d.Jobs {
+		if job == nil || job.branchFunc != nil {
+			continue
+		}
+		if isBranchChild(job) && !contains(selected, job.ID) {
+			d.Logf("Skipping job %s (auto-success to unblock DAG)", job.ID)
+			job.setStatus(JobSkipped) // Menggunakan setStatus()
+		}
+	}
+
+	j.setStatus(JobSuccess) // Menggunakan setStatus()
+
+	// Jalankan yang dipilih
+	for _, selID := range selected {
+		if child, ok := d.jobMap[selID]; ok {
+			jobWg.Add(1)
+			go d.runJobWithContext(child, ctx, jobWg, dagCtx)
+		}
+	}
+}
+
+func (d *DAG) triggerChildrenIfReady(j *Job, ctx *Context, jobWg *sync.WaitGroup, dagCtx context.Context) {
+	for _, child := range d.getChildren(j) {
+		if d.shouldRun(child) {
+			jobWg.Add(1)
+			go d.runJobWithContext(child, ctx, jobWg, dagCtx)
+		} else {
+			child.setStatus(JobSkipped) // Menggunakan setStatus()
+			d.Logf("Skipping job %s due to unmet trigger rule", child.ID)
+		}
+	}
 }
 
 func (d *DAG) runJobWithContext(j *Job, ctx *Context, jobWg *sync.WaitGroup, dagCtx context.Context) {
 	defer jobWg.Done()
 
-	if len(d.activeJobs) > 0 {
-		parentsSucceeded := true
-		for _, dep := range j.depends {
-			if dep.getStatus() != "SUCCESS" {
-				parentsSucceeded = false
-				break
-			}
-		}
-		if !parentsSucceeded {
-			return
-		}
-
-		if !d.activeJobs[j.ID] {
-			d.activeJobs[j.ID] = true
-		}
+	// Tunggu semua parent selesai (SUCCESS, FAILED, SKIPPED)
+	if !d.waitUntilParentsDone(j, dagCtx) {
+		return // dibatalkan
 	}
 
-	for _, dep := range j.depends {
-		for dep.getStatus() != "SUCCESS" {
-			select {
-			case <-dagCtx.Done():
-				d.LogErrorf("Job %s canceled", j.ID)
-				return
-			default:
-			}
-			time.Sleep(500 * time.Millisecond)
-		}
+	// Evaluasi Trigger Rule
+	if !d.shouldRun(j) {
+		j.setStatus(JobSkipped) // Menggunakan setStatus()
+		d.Logf("Skipping job %s due to unmet trigger rule", j.ID)
+		return
 	}
 
-	j.setStatus("running")
+	d.markJobActive(j)
+
+	// Set status & eksekusi
+	j.setStatus(JobRunning) // Menggunakan setStatus()
 	d.Logf("Starting job %s", j.ID)
 
-	defer func() {
-		if r := recover(); r != nil {
-			d.LogErrorf("Job %s panic: %v", j.ID, r)
-			j.setStatus("FAILED")
-		}
-	}()
+	defer d.recoverFromPanic(j)
 
 	if j.action != nil {
-		j.action(ctx)
-		j.setStatus("SUCCESS")
-		d.Logf("Completed job %s", j.ID)
+		d.runActionJob(j, ctx)
 	} else if j.branchFunc != nil {
-		selected := j.branchFunc(ctx)
-		d.Logf("Branch %s selected %v", j.ID, selected)
-
-		for _, selID := range selected {
-			d.markDownstreamActive(selID)
-		}
-
-		// Auto-skip child branch
-		for _, job := range d.Jobs {
-			if job == nil || job.branchFunc != nil {
-				continue
-			}
-			if isBranchChild(job) && !contains(selected, job.ID) {
-				d.Logf("Skipping job %s (auto-success to unblock DAG)", job.ID)
-				job.setStatus("SKIPPED")
-			}
-		}
-
-		j.setStatus("SUCCESS")
-
-		for _, selID := range selected {
-			if child, ok := d.jobMap[selID]; ok {
-				jobWg.Add(1)
-				go d.runJobWithContext(child, ctx, jobWg, dagCtx)
-			}
-		}
+		d.runBranchJob(j, ctx, jobWg, dagCtx)
 		return
 	} else {
-		j.setStatus("SUCCESS")
+		j.setStatus(JobSuccess) // Menggunakan setStatus()
 		d.Logf("Completed job %s", j.ID)
 	}
 
-	for _, child := range d.Jobs {
-		for _, dep := range child.depends {
-			if dep == j {
-				allDepOk := true
-				for _, dep := range child.depends {
-					if dep.getStatus() != "SUCCESS" {
-						allDepOk = false
-						break
-					}
-				}
-				if allDepOk {
-					jobWg.Add(1)
-					go d.runJobWithContext(child, ctx, jobWg, dagCtx)
-				}
-			}
-		}
-	}
+	d.triggerChildrenIfReady(j, ctx, jobWg, dagCtx)
 }
 
 func isBranchChild(j *Job) bool {
@@ -499,6 +612,9 @@ func contains(slice []string, item string) bool {
 }
 
 func (d *DAG) markDownstreamActive(jobID string) {
+	d.activeJobsLock.Lock()   // Kunci map activeJobs
+	defer d.activeJobsLock.Unlock() // Pastikan kunci dilepaskan
+
 	if d.activeJobs[jobID] {
 		return
 	}
@@ -506,15 +622,22 @@ func (d *DAG) markDownstreamActive(jobID string) {
 
 	if job, ok := d.jobMap[jobID]; ok {
 		for _, child := range d.getChildren(job) {
-			d.markDownstreamActive(child.ID)
+			// Perhatikan: Rekursi ini juga akan mengunci mutex di setiap panggilan,
+			// yang seharusnya aman karena mutex melindungi seluruh map.
+			d.markDownstreamActive(child.ID) 
 		}
 	}
 }
 
 func (d *DAG) RerunDAG() {
 	d.Logf("Rerunning DAG: %s", d.Name)
+	// Reset status semua job ke PENDING dan reset activeJobs
+	d.activeJobsLock.Lock()
+	d.activeJobs = make(map[string]bool) // Reset active jobs
+	d.activeJobsLock.Unlock()
+
 	for _, job := range d.Jobs {
-		job.setStatus("PENDING")
+		job.setStatus(JobPending) // Menggunakan setStatus()
 	}
 	ctx := &Context{DAG: d}
 	var jobWg sync.WaitGroup
@@ -544,7 +667,7 @@ func (d *DAG) RerunJob(jobID string, downstream bool, upstream bool) {
 		d.resetDownstream(target, visited)
 	}
 	if !upstream && !downstream {
-		target.setStatus("PENDING")
+		target.setStatus(JobPending) // Menggunakan setStatus()
 	}
 
 	// Run
@@ -560,7 +683,7 @@ func (d *DAG) resetUpstream(job *Job, visited map[string]bool) {
 		return
 	}
 	visited[job.ID] = true
-	job.setStatus("PENDING")
+	job.setStatus(JobPending) // Menggunakan setStatus()
 	for _, dep := range job.depends {
 		d.resetUpstream(dep, visited)
 	}
@@ -571,12 +694,13 @@ func (d *DAG) resetDownstream(job *Job, visited map[string]bool) {
 		return
 	}
 	visited[job.ID] = true
-	job.setStatus("PENDING")
+	job.setStatus(JobPending) // Menggunakan setStatus()
 	for _, child := range d.getChildren(job) {
 		d.resetDownstream(child, visited)
 	}
 }
 
+// getStatus dan setStatus sudah menggunakan mutex internal Job, jadi aman.
 func (j *Job) getStatus() JobStatus {
 	j.statusLock.Lock()
 	defer j.statusLock.Unlock()
@@ -591,7 +715,8 @@ func (j *Job) setStatus(s JobStatus) {
 
 func (d *DAG) PrintGraph() {
 	fmt.Printf("DAG: %s\n", d.Name)
-	visited := make(map[string]bool)
+	// Visited map lokal untuk PrintGraph agar tidak mengganggu state DAG
+	visited := make(map[string]bool) 
 	for _, job := range d.Jobs {
 		if len(job.depends) == 0 {
 			d.printJobTree(job, "", true, visited)
@@ -600,6 +725,12 @@ func (d *DAG) PrintGraph() {
 }
 
 func (d *DAG) printJobTree(j *Job, prefix string, isLast bool, visited map[string]bool) {
+	// Hindari cetak ulang node yang sudah dikunjungi (untuk DAG dengan diamond structure)
+	if visited[j.ID] {
+        return
+    }
+    visited[j.ID] = true
+
 	connector := "├──"
 	newPrefix := prefix + "│   "
 	if isLast {
