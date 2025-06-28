@@ -3,14 +3,14 @@ package dag
 import (
 	"bytes"
 	"context"
+	"dagsflow-go/operator"
 	"encoding/json"
 	"fmt"
-	"dagsflow-go/operator"
 	"os"
 	"path/filepath"
 	"sync"
-	"time"
 	"text/template"
+	"time"
 
 	"github.com/robfig/cron/v3"
 )
@@ -103,6 +103,8 @@ type DAG struct {
 	activeJobs     map[string]bool
 	activeJobsLock sync.Mutex // Mutex untuk melindungi map activeJobs
 	Connections    map[string]*Connection
+	isRunning      bool
+	runningLock    sync.Mutex
 }
 
 var (
@@ -134,7 +136,7 @@ func (d *DAG) shouldRun(job *Job) bool {
 		return true
 	case Always:
 		return true
-	default: 
+	default:
 		for _, upstream := range job.Upstreams {
 			if upstream.getStatus() != JobSuccess { // Menggunakan getStatus()
 				return false
@@ -149,6 +151,22 @@ func (d *DAG) logLine(level, msg string) {
 	d.logLock.Lock()
 	defer d.logLock.Unlock()
 	d.logFile.WriteString(line)
+}
+
+func (d *DAG) trySetRunning() bool {
+	d.runningLock.Lock()
+	defer d.runningLock.Unlock()
+	if d.isRunning {
+		return false
+	}
+	d.isRunning = true
+	return true
+}
+
+func (d *DAG) unsetRunning() {
+	d.runningLock.Lock()
+	defer d.runningLock.Unlock()
+	d.isRunning = false
 }
 
 func (d *DAG) Logf(format string, args ...interface{}) {
@@ -186,13 +204,13 @@ func NewDAG(name, schedule string, config ...map[string]any) *DAG {
 		cfg = make(map[string]any)
 	}
 	return &DAG{
-		Name:           name,
-		Schedule:       schedule,
-		Config:         cfg,
-		xcom:           make(map[string]interface{}),
-		jobMap:         make(map[string]*Job),
-		activeJobs:     make(map[string]bool),
-		Connections:    make(map[string]*Connection),
+		Name:        name,
+		Schedule:    schedule,
+		Config:      cfg,
+		xcom:        make(map[string]interface{}),
+		jobMap:      make(map[string]*Job),
+		activeJobs:  make(map[string]bool),
+		Connections: make(map[string]*Connection),
 	}
 }
 
@@ -271,7 +289,7 @@ func (d *DAG) NewJob(id string, action func(ctx *Context)) *Job {
 		ID:          id,
 		action:      action,
 		status:      JobPending,
-		TriggerRule: Always,
+		TriggerRule: AllSuccess,
 	}
 	d.Jobs = append(d.Jobs, job)
 	d.jobMap[id] = job
@@ -401,15 +419,24 @@ func (d *DAG) Run() {
 
 	c := cron.New()
 	c.AddFunc(d.Schedule, func() {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		if !d.trySetRunning() {
+			d.Logf("DAG %s is still running, skipping new trigger", d.Name)
+			return
+		}
 
 		d.Logf("Cron triggered for DAG %s", d.Name)
 		d.activeJobsLock.Lock()
-		d.activeJobs = make(map[string]bool) 
+		d.activeJobs = make(map[string]bool)
 		d.activeJobsLock.Unlock()
-		go d.runDAGWithContext(ctx)
+
+		go func() {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			d.runDAGWithContext(ctx)
+			d.unsetRunning()
+		}()
 	})
+
 	c.Start()
 
 	// Keep the process alive
@@ -457,6 +484,7 @@ func (d *DAG) runDAGWithContext(ctx context.Context) {
 
 	jobWg.Wait()
 	d.Logf("DAG %s finished.", d.Name)
+	d.unsetRunning()
 }
 
 func (d *DAG) waitUntilParentsDone(j *Job, dagCtx context.Context) bool {
@@ -483,8 +511,8 @@ func (d *DAG) waitUntilParentsDone(j *Job, dagCtx context.Context) bool {
 }
 
 func (d *DAG) markJobActive(j *Job) {
-	d.activeJobsLock.Lock() 
-	defer d.activeJobsLock.Unlock() 
+	d.activeJobsLock.Lock()
+	defer d.activeJobsLock.Unlock()
 	if !d.activeJobs[j.ID] {
 		d.activeJobs[j.ID] = true
 	}
@@ -492,14 +520,14 @@ func (d *DAG) markJobActive(j *Job) {
 
 func (d *DAG) recoverFromPanic(j *Job) {
 	if r := recover(); r != nil {
-		j.setStatus(JobFailed) 
+		j.setStatus(JobFailed)
 		d.LogErrorf("Job %s panic: %v", j.ID, r)
 	}
 }
 
 func (d *DAG) runActionJob(j *Job, ctx *Context) {
 	j.action(ctx)
-	j.setStatus(JobSuccess) 
+	j.setStatus(JobSuccess)
 	d.Logf("Completed job %s", j.ID)
 }
 
@@ -507,24 +535,21 @@ func (d *DAG) runBranchJob(j *Job, ctx *Context, jobWg *sync.WaitGroup, dagCtx c
 	selected := j.branchFunc(ctx)
 	d.Logf("Branch %s selected %v", j.ID, selected)
 
-	// Mark downstream active for selected branches
-	for _, selID := range selected {
-		d.markDownstreamActive(selID)
-	}
+	// Set job ini jadi success
+	j.setStatus(JobSuccess)
 
+	// Skip semua child branch yang tidak dipilih
 	for _, job := range d.Jobs {
 		if job == nil || job.branchFunc != nil {
 			continue
 		}
 		if isBranchChild(job) && !contains(selected, job.ID) {
 			d.Logf("Skipping job %s (auto-success to unblock DAG)", job.ID)
-			job.setStatus(JobSkipped) 
+			job.setStatus(JobSkipped)
 		}
 	}
 
-	j.setStatus(JobSuccess) 
-
-	// Jalankan yang dipilih
+	// ✅ Trigger job yang dipilih langsung di sini
 	for _, selID := range selected {
 		if child, ok := d.jobMap[selID]; ok {
 			jobWg.Add(1)
@@ -539,7 +564,7 @@ func (d *DAG) triggerChildrenIfReady(j *Job, ctx *Context, jobWg *sync.WaitGroup
 			jobWg.Add(1)
 			go d.runJobWithContext(child, ctx, jobWg, dagCtx)
 		} else {
-			child.setStatus(JobSkipped) 
+			child.setStatus(JobSkipped)
 			d.Logf("Skipping job %s due to unmet trigger rule", child.ID)
 		}
 	}
@@ -553,14 +578,14 @@ func (d *DAG) runJobWithContext(j *Job, ctx *Context, jobWg *sync.WaitGroup, dag
 	}
 
 	if !d.shouldRun(j) {
-		j.setStatus(JobSkipped) 
+		j.setStatus(JobSkipped)
 		d.Logf("Skipping job %s due to unmet trigger rule", j.ID)
 		return
 	}
 
 	d.markJobActive(j)
 
-	j.setStatus(JobRunning) 
+	j.setStatus(JobRunning)
 	d.Logf("Starting job %s", j.ID)
 
 	defer d.recoverFromPanic(j)
@@ -571,7 +596,7 @@ func (d *DAG) runJobWithContext(j *Job, ctx *Context, jobWg *sync.WaitGroup, dag
 		d.runBranchJob(j, ctx, jobWg, dagCtx)
 		return
 	} else {
-		j.setStatus(JobSuccess) 
+		j.setStatus(JobSuccess)
 		d.Logf("Completed job %s", j.ID)
 	}
 
@@ -597,7 +622,7 @@ func contains(slice []string, item string) bool {
 }
 
 func (d *DAG) markDownstreamActive(jobID string) {
-	d.activeJobsLock.Lock() 
+	d.activeJobsLock.Lock()
 	defer d.activeJobsLock.Unlock()
 
 	if d.activeJobs[jobID] {
@@ -607,7 +632,7 @@ func (d *DAG) markDownstreamActive(jobID string) {
 
 	if job, ok := d.jobMap[jobID]; ok {
 		for _, child := range d.getChildren(job) {
-			d.markDownstreamActive(child.ID) 
+			d.markDownstreamActive(child.ID)
 		}
 	}
 }
@@ -619,7 +644,7 @@ func (d *DAG) RerunDAG() {
 	d.activeJobsLock.Unlock()
 
 	for _, job := range d.Jobs {
-		job.setStatus(JobPending) 
+		job.setStatus(JobPending)
 	}
 	ctx := &Context{DAG: d}
 	var jobWg sync.WaitGroup
@@ -649,7 +674,7 @@ func (d *DAG) RerunJob(jobID string, downstream bool, upstream bool) {
 		d.resetDownstream(target, visited)
 	}
 	if !upstream && !downstream {
-		target.setStatus(JobPending) 
+		target.setStatus(JobPending)
 	}
 
 	// Run
@@ -665,7 +690,7 @@ func (d *DAG) resetUpstream(job *Job, visited map[string]bool) {
 		return
 	}
 	visited[job.ID] = true
-	job.setStatus(JobPending) 
+	job.setStatus(JobPending)
 	for _, dep := range job.depends {
 		d.resetUpstream(dep, visited)
 	}
@@ -676,7 +701,7 @@ func (d *DAG) resetDownstream(job *Job, visited map[string]bool) {
 		return
 	}
 	visited[job.ID] = true
-	job.setStatus(JobPending) 
+	job.setStatus(JobPending)
 	for _, child := range d.getChildren(job) {
 		d.resetDownstream(child, visited)
 	}
@@ -696,20 +721,15 @@ func (j *Job) setStatus(s JobStatus) {
 
 func (d *DAG) PrintGraph() {
 	fmt.Printf("DAG: %s\n", d.Name)
-	visited := make(map[string]bool) 
+	visited := make(map[string]bool)
 	for _, job := range d.Jobs {
 		if len(job.depends) == 0 {
-			d.printJobTree(job, "", true, visited)
+			d.printJobTree(job, "", true, visited, "")
 		}
 	}
 }
 
-func (d *DAG) printJobTree(j *Job, prefix string, isLast bool, visited map[string]bool) {
-	if visited[j.ID] {
-        return
-    }
-    visited[j.ID] = true
-
+func (d *DAG) printJobTree(j *Job, prefix string, isLast bool, visited map[string]bool, parentID string) {
 	connector := "├──"
 	newPrefix := prefix + "│   "
 	if isLast {
@@ -717,12 +737,23 @@ func (d *DAG) printJobTree(j *Job, prefix string, isLast bool, visited map[strin
 		newPrefix = prefix + "    "
 	}
 
-	fmt.Printf("%s%s %s\n", prefix, connector, j.ID)
+	label := ""
+	if parentID != "" {
+		label = fmt.Sprintf("\x1b[3m\x1b[38;5;245m [from %s]\x1b[0m", parentID)
+
+	}
+
+	fmt.Printf("%s%s %s%s\n", prefix, connector, j.ID, label)
+
+	if visited[j.ID] {
+		return
+	}
+	visited[j.ID] = true
 
 	children := d.getChildren(j)
 	for i, child := range children {
 		last := i == len(children)-1
-		d.printJobTree(child, newPrefix, last, visited)
+		d.printJobTree(child, newPrefix, last, visited, j.ID)
 	}
 }
 

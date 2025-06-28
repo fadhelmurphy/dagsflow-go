@@ -6,7 +6,7 @@ import (
 )
 
 func init() {
-	d := dag.NewDAG("dag_branch", "*/1 * * * *")
+	d := dag.NewDAG("dag_branch", "@every 1s")
 
 	start := d.NewJob("start", func(ctx *dag.Context) {
 		fmt.Println("[dag_branch] Start job running")
