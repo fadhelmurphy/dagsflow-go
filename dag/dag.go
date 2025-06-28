@@ -58,7 +58,7 @@ type Job struct {
 	Downstreams []*Job
 	TriggerRule TriggerRule
 	status      JobStatus
-	statusLock  sync.Mutex // Mutex for Job status
+	statusLock  sync.Mutex
 }
 
 func (j *Job) WithTriggerRule(rule TriggerRule) *Job {
