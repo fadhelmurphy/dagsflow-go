@@ -10,9 +10,7 @@ import (
 	"path/filepath"
 	"sync"
 	"text/template"
-	"time"
 
-	"github.com/robfig/cron/v3"
 )
 
 type Context struct {
@@ -29,36 +27,6 @@ func (c *Context) GetXCom(key string) interface{} {
 	c.DAG.xcomLock.Lock()
 	defer c.DAG.xcomLock.Unlock()
 	return c.DAG.xcom[key]
-}
-
-type TriggerRule string
-
-const (
-	AllSuccess TriggerRule = "all_success"
-	AllFailed  TriggerRule = "all_failed"
-	Always     TriggerRule = "always"
-)
-
-type JobStatus string
-
-const (
-	JobPending JobStatus = "PENDING"
-	JobRunning JobStatus = "RUNNING"
-	JobSuccess JobStatus = "SUCCESS"
-	JobFailed  JobStatus = "FAILED"
-	JobSkipped JobStatus = "SKIPPED"
-)
-
-type Job struct {
-	ID          string
-	action      func(ctx *Context)
-	branchFunc  func(ctx *Context) []string
-	depends     []*Job
-	Upstreams   []*Job
-	Downstreams []*Job
-	TriggerRule TriggerRule
-	status      JobStatus
-	statusLock  sync.Mutex
 }
 
 func (j *Job) WithTriggerRule(rule TriggerRule) *Job {
@@ -146,13 +114,6 @@ func (d *DAG) shouldRun(job *Job) bool {
 	}
 }
 
-func (d *DAG) logLine(level, msg string) {
-	line := fmt.Sprintf("[%s] [%s] %s\n", time.Now().Format("2006-01-02 15:04:05"), level, msg)
-	d.logLock.Lock()
-	defer d.logLock.Unlock()
-	d.logFile.WriteString(line)
-}
-
 func (d *DAG) trySetRunning() bool {
 	d.runningLock.Lock()
 	defer d.runningLock.Unlock()
@@ -167,16 +128,6 @@ func (d *DAG) unsetRunning() {
 	d.runningLock.Lock()
 	defer d.runningLock.Unlock()
 	d.isRunning = false
-}
-
-func (d *DAG) Logf(format string, args ...interface{}) {
-	msg := fmt.Sprintf(format, args...)
-	d.logLine("INFO", msg)
-}
-
-func (d *DAG) LogErrorf(format string, args ...interface{}) {
-	msg := fmt.Sprintf(format, args...)
-	d.logLine("ERROR", msg)
 }
 
 func Get(name string) (*DAG, bool) {
@@ -267,23 +218,6 @@ func LoadAllConnections(dir string) map[string]Connection {
 	return connections
 }
 
-func (d *DAG) TriggerDAGWithConfig(dagName string, config map[string]any, blocking bool) {
-	if target, ok := Get(dagName); ok {
-		d.Logf("Triggering DAG %s from DAG %s with config %v", dagName, d.Name, config)
-
-		target.Config = config
-
-		ctx := context.Background()
-		if blocking {
-			target.RunWithContext(ctx)
-		} else {
-			go target.RunWithContext(ctx)
-		}
-	} else {
-		d.LogErrorf("DAG %s not found to trigger", dagName)
-	}
-}
-
 func (d *DAG) NewJob(id string, action func(ctx *Context)) *Job {
 	job := &Job{
 		ID:          id,
@@ -368,147 +302,6 @@ func (d *DAG) NewBigQueryJob(id string, queryPath string, params map[string]any)
 	return job
 }
 
-func (d *DAG) TriggerDAG(dagName string) {
-	if target, ok := Get(dagName); ok {
-		d.Logf("Triggering DAG %s from DAG %s", dagName, d.Name)
-		ctx := context.Background()
-		go target.RunWithContext(ctx)
-	} else {
-		d.LogErrorf("DAG %s not found to trigger", dagName)
-	}
-}
-
-func (d *DAG) TriggerDAGBlocking(dagName string) {
-	if target, ok := Get(dagName); ok {
-		d.Logf("Triggering DAG %s (blocking) from DAG %s", dagName, d.Name)
-		ctx := context.Background()
-		target.RunWithContext(ctx)
-	} else {
-		d.LogErrorf("DAG %s not found to trigger", dagName)
-	}
-}
-
-func (d *DAG) Run() {
-	os.MkdirAll("logs", 0755)
-	logPath := fmt.Sprintf("logs/%s.log", d.Name)
-	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		fmt.Printf("Failed to open log file: %v\n", err)
-		return
-	}
-	d.logFile = f
-	defer d.logFile.Close()
-
-	// Redirect stdout
-	r, w, _ := os.Pipe()
-	oldStdout := os.Stdout
-	os.Stdout = w
-	defer func() { os.Stdout = oldStdout }()
-
-	go func() {
-		buf := make([]byte, 1024)
-		for {
-			n, err := r.Read(buf)
-			if err != nil {
-				return
-			}
-			line := string(bytes.TrimRight(buf[:n], "\n"))
-			d.logLine("INFO", line)
-		}
-	}()
-
-	c := cron.New()
-	c.AddFunc(d.Schedule, func() {
-		if !d.trySetRunning() {
-			d.Logf("DAG %s is still running, skipping new trigger", d.Name)
-			return
-		}
-
-		d.Logf("Cron triggered for DAG %s", d.Name)
-		d.activeJobsLock.Lock()
-		d.activeJobs = make(map[string]bool)
-		d.activeJobsLock.Unlock()
-
-		go func() {
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			d.runDAGWithContext(ctx)
-			d.unsetRunning()
-		}()
-	})
-
-	c.Start()
-
-	// Keep the process alive
-	select {}
-}
-
-func (d *DAG) RunWithContext(ctx context.Context) {
-	os.MkdirAll("logs", 0755)
-	logPath := fmt.Sprintf("logs/%s.log", d.Name)
-	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		fmt.Printf("Failed to open log file: %v\n", err)
-		return
-	}
-	d.logFile = f
-	defer d.logFile.Close()
-
-	d.wg.Add(1)
-	go func() {
-		defer d.wg.Done()
-		d.runDAGWithContext(ctx)
-	}()
-	d.wg.Wait()
-}
-
-func (d *DAG) runDAGWithContext(ctx context.Context) {
-	d.activeJobsLock.Lock()
-	d.activeJobs = make(map[string]bool)
-	d.activeJobsLock.Unlock()
-	d.Logf("Running DAG: %s", d.Name)
-
-	myCtx := &Context{DAG: d}
-	var jobWg sync.WaitGroup
-
-	for _, job := range d.Jobs {
-		job.setStatus(JobPending)
-	}
-
-	for _, job := range d.Jobs {
-		if len(job.depends) == 0 && d.shouldRun(job) {
-			jobWg.Add(1)
-			go d.runJobWithContext(job, myCtx, &jobWg, ctx)
-		}
-	}
-
-	jobWg.Wait()
-	d.Logf("DAG %s finished.", d.Name)
-	d.unsetRunning()
-}
-
-func (d *DAG) waitUntilParentsDone(j *Job, dagCtx context.Context) bool {
-	for {
-		allDone := true
-		for _, dep := range j.depends {
-			status := dep.getStatus()
-			if status != JobSuccess && status != JobFailed && status != JobSkipped {
-				allDone = false
-				break
-			}
-		}
-		if allDone {
-			return true
-		}
-		select {
-		case <-dagCtx.Done():
-			d.LogErrorf("Job %s canceled before parent finished", j.ID)
-			return false
-		default:
-			time.Sleep(300 * time.Millisecond)
-		}
-	}
-}
 
 func (d *DAG) markJobActive(j *Job) {
 	d.activeJobsLock.Lock()
@@ -556,51 +349,6 @@ func (d *DAG) runBranchJob(j *Job, ctx *Context, jobWg *sync.WaitGroup, dagCtx c
 			go d.runJobWithContext(child, ctx, jobWg, dagCtx)
 		}
 	}
-}
-
-func (d *DAG) triggerChildrenIfReady(j *Job, ctx *Context, jobWg *sync.WaitGroup, dagCtx context.Context) {
-	for _, child := range d.getChildren(j) {
-		if d.shouldRun(child) {
-			jobWg.Add(1)
-			go d.runJobWithContext(child, ctx, jobWg, dagCtx)
-		} else {
-			child.setStatus(JobSkipped)
-			d.Logf("Skipping job %s due to unmet trigger rule", child.ID)
-		}
-	}
-}
-
-func (d *DAG) runJobWithContext(j *Job, ctx *Context, jobWg *sync.WaitGroup, dagCtx context.Context) {
-	defer jobWg.Done()
-
-	if !d.waitUntilParentsDone(j, dagCtx) {
-		return
-	}
-
-	if !d.shouldRun(j) {
-		j.setStatus(JobSkipped)
-		d.Logf("Skipping job %s due to unmet trigger rule", j.ID)
-		return
-	}
-
-	d.markJobActive(j)
-
-	j.setStatus(JobRunning)
-	d.Logf("Starting job %s", j.ID)
-
-	defer d.recoverFromPanic(j)
-
-	if j.action != nil {
-		d.runActionJob(j, ctx)
-	} else if j.branchFunc != nil {
-		d.runBranchJob(j, ctx, jobWg, dagCtx)
-		return
-	} else {
-		j.setStatus(JobSuccess)
-		d.Logf("Completed job %s", j.ID)
-	}
-
-	d.triggerChildrenIfReady(j, ctx, jobWg, dagCtx)
 }
 
 func isBranchChild(j *Job) bool {
@@ -717,54 +465,4 @@ func (j *Job) setStatus(s JobStatus) {
 	j.statusLock.Lock()
 	defer j.statusLock.Unlock()
 	j.status = s
-}
-
-func (d *DAG) PrintGraph() {
-	fmt.Printf("DAG: %s\n", d.Name)
-	visited := make(map[string]bool)
-	for _, job := range d.Jobs {
-		if len(job.depends) == 0 {
-			d.printJobTree(job, "", true, visited, "")
-		}
-	}
-}
-
-func (d *DAG) printJobTree(j *Job, prefix string, isLast bool, visited map[string]bool, parentID string) {
-	connector := "├──"
-	newPrefix := prefix + "│   "
-	if isLast {
-		connector = "└──"
-		newPrefix = prefix + "    "
-	}
-
-	label := ""
-	if parentID != "" {
-		label = fmt.Sprintf("\x1b[3m\x1b[38;5;245m [from %s]\x1b[0m", parentID)
-
-	}
-
-	fmt.Printf("%s%s %s%s\n", prefix, connector, j.ID, label)
-
-	if visited[j.ID] {
-		return
-	}
-	visited[j.ID] = true
-
-	children := d.getChildren(j)
-	for i, child := range children {
-		last := i == len(children)-1
-		d.printJobTree(child, newPrefix, last, visited, j.ID)
-	}
-}
-
-func (d *DAG) getChildren(j *Job) []*Job {
-	var children []*Job
-	for _, job := range d.Jobs {
-		for _, dep := range job.depends {
-			if dep == j {
-				children = append(children, job)
-			}
-		}
-	}
-	return children
 }
