@@ -106,7 +106,7 @@ func (d *DAG) shouldRun(job *Job) bool {
 		return true
 	default:
 		for _, upstream := range job.Upstreams {
-			if upstream.getStatus() != JobSuccess { // Menggunakan getStatus()
+			if upstream.getStatus() != JobSuccess {
 				return false
 			}
 		}

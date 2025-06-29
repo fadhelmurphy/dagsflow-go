@@ -15,26 +15,38 @@ func init() {
 		panic("Simulasi error di Job B")
 	})
 
-	jobC := d.NewJob("job_c_all_success", func(ctx *dag.Context) {
-		ctx.DAG.Logf("Job C jalan soalnya semua upstream sukses")
+	jobAC := d.NewJob("job_a_c_all_success", func(ctx *dag.Context) {
+		ctx.DAG.Logf("Job A C jalan soalnya semua upstream sukses")
 	}).WithTriggerRule(dag.AllSuccess)
 
-	jobD := d.NewJob("job_d_all_failed", func(ctx *dag.Context) {
-		ctx.DAG.Logf("Job D jalan soalnya semua upstream gagal")
+	jobBC := d.NewJob("job_b_all_success", func(ctx *dag.Context) {
+		ctx.DAG.Logf("Job B C jalan soalnya semua upstream sukses")
+	}).WithTriggerRule(dag.AllSuccess)
+
+	jobAD := d.NewJob("job_a_d_all_failed", func(ctx *dag.Context) {
+		ctx.DAG.Logf("Job A D jalan soalnya semua upstream gagal")
 	}).WithTriggerRule(dag.AllFailed)
 
-	jobE := d.NewJob("job_e_always", func(ctx *dag.Context) {
-		ctx.DAG.Logf("Job E jalan soalnya trigger rulenya always")
+	jobBD := d.NewJob("job_b_d_all_failed", func(ctx *dag.Context) {
+		ctx.DAG.Logf("Job B D jalan soalnya semua upstream gagal")
+	}).WithTriggerRule(dag.AllFailed)
+
+	jobAE := d.NewJob("job_a_e_always", func(ctx *dag.Context) {
+		ctx.DAG.Logf("Job A E jalan soalnya trigger rulenya always")
 	}).WithTriggerRule(dag.Always)
 
-	jobA.Then(jobC)
-	jobB.Then(jobC)
+	jobBE := d.NewJob("job_b_e_always", func(ctx *dag.Context) {
+		ctx.DAG.Logf("Job B E jalan soalnya trigger rulenya always")
+	}).WithTriggerRule(dag.Always)
 
-	jobA.Then(jobD)
-	jobB.Then(jobD)
+	jobA.Then(jobAC)
+	jobB.Then(jobBC)
 
-	jobA.Then(jobE)
-	jobB.Then(jobE)
+	jobA.Then(jobAD)
+	jobB.Then(jobBD)
+
+	jobA.Then(jobAE)
+	jobB.Then(jobBE)
 
 	dag.Register(d)
 }
