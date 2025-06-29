@@ -328,10 +328,8 @@ func (d *DAG) runBranchJob(j *Job, ctx *Context, jobWg *sync.WaitGroup, dagCtx c
 	selected := j.branchFunc(ctx)
 	d.Logf("Branch %s selected %v", j.ID, selected)
 
-	// Set job ini jadi success
 	j.setStatus(JobSuccess)
 
-	// Skip semua child branch yang tidak dipilih
 	for _, job := range d.Jobs {
 		if job == nil || job.branchFunc != nil {
 			continue
@@ -342,7 +340,6 @@ func (d *DAG) runBranchJob(j *Job, ctx *Context, jobWg *sync.WaitGroup, dagCtx c
 		}
 	}
 
-	// ✅ Trigger job yang dipilih langsung di sini
 	for _, selID := range selected {
 		if child, ok := d.jobMap[selID]; ok {
 			jobWg.Add(1)

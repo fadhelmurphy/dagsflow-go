@@ -16,15 +16,15 @@ func init() {
 	})
 
 	jobC := d.NewJob("job_c_all_success", func(ctx *dag.Context) {
-		ctx.DAG.Logf("Job C jalan karena semua upstream sukses")
+		ctx.DAG.Logf("Job C jalan soalnya semua upstream sukses")
 	}).WithTriggerRule(dag.AllSuccess)
 
 	jobD := d.NewJob("job_d_all_failed", func(ctx *dag.Context) {
-		ctx.DAG.Logf("Job D jalan karena semua upstream gagal")
+		ctx.DAG.Logf("Job D jalan soalnya semua upstream gagal")
 	}).WithTriggerRule(dag.AllFailed)
 
 	jobE := d.NewJob("job_e_always", func(ctx *dag.Context) {
-		ctx.DAG.Logf("Job E jalan karena trigger rule = always")
+		ctx.DAG.Logf("Job E jalan soalnya trigger rulenya always")
 	}).WithTriggerRule(dag.Always)
 
 	jobA.Then(jobC)
