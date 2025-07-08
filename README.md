@@ -1,6 +1,6 @@
 # dagsflow-go
 
-**dagsflow-go** adalah tools CLI sederhana untuk membuat dan menjalankan DAG scheduler mirip seperti Airflow menggunakan Go.
+**dagsflow-go** sebuah workflow orchestrator berbasis Golang yg terinspirasi Airflow.
 
 ---
 
